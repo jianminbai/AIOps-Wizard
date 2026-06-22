@@ -59,6 +59,8 @@ def _tokenize(text: str) -> list[str]:
     """Split text into lowercase tokens (non-empty)."""
     if not text:
         return []
+    if not isinstance(text, str):
+        text = str(text)
     return list(set(re.findall(r"[a-zA-Z0-9\u4e00-\u9fff_\-]+", text.lower())))
 
 
@@ -281,9 +283,12 @@ def quick_match_weighted(
 
     for entry in entries:
         matched_kws = []
-        title_lower = entry.get("title", "").lower()
+        title = entry.get("title", "")
+        title_lower = title.lower() if isinstance(title, str) else str(title).lower()
 
         for kw in entry.get("keywords", []):
+            if not isinstance(kw, str):
+                kw = str(kw)
             kw_lower = kw.lower()
             if kw_lower in text_lower:
                 matched_kws.append(kw)
@@ -416,12 +421,18 @@ def search_keyword(q: str) -> list[dict]:
         eid = entry["id"]
         if eid in matched_ids:
             continue
-        if q_lower in entry.get("title", "").lower():
+        title = entry.get("title", "")
+        title_str = title.lower() if isinstance(title, str) else str(title).lower()
+        rc = entry.get("root_cause", "")
+        rc_str = rc.lower() if isinstance(rc, str) else str(rc).lower()
+        if q_lower in title_str:
             matched_ids.add(eid)
-        elif q_lower in entry.get("root_cause", "").lower():
+        elif q_lower in rc_str:
             matched_ids.add(eid)
         else:
             for kw in entry.get("keywords", []):
+                if not isinstance(kw, str):
+                    kw = str(kw)
                 if q_lower in kw.lower():
                     matched_ids.add(eid)
                     break
@@ -429,12 +440,15 @@ def search_keyword(q: str) -> list[dict]:
     # Sort by relevance: entries whose title/root_cause contain the query first
     def _sort_key(eid):
         entry = entry_map[eid]
-        title_lower = entry.get("title", "").lower()
-        rc_lower = entry.get("root_cause", "").lower()
-        # Prefer exact title match > keyword match > root_cause match
+        title = entry.get("title", "")
+        title_lower = title.lower() if isinstance(title, str) else str(title).lower()
+        rc = entry.get("root_cause", "")
+        rc_lower = rc.lower() if isinstance(rc, str) else str(rc).lower()
         if q_lower in title_lower:
             return 0
         for kw in entry.get("keywords", []):
+            if not isinstance(kw, str):
+                kw = str(kw)
             if q_lower in kw.lower():
                 return 1
         if q_lower in rc_lower:

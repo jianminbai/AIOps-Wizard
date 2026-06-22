@@ -1,0 +1,181 @@
+# Service Mesh & Cloud-Native KB entries
+# Category: dependency / resource (扩展现有分类)
+
+- id: KB701
+  title: Istio Sidecar 注入失败/流量拦截异常
+  title_en: Istio Sidecar Injection Failure / Traffic Interception Error
+  keywords: [istio, sidecar, envoy, service mesh, 服务网格, injection, iptables, mTLS, 503]
+  category: dependency
+  severity: P1
+  common_causes:
+    - Namespace 未设置 istio-injection label
+    - Sidecar 资源限制不足导致 OOM
+    - mTLS 证书过期
+    - Envoy 配置下发延迟
+    - Istiod 不可达
+  check_commands:
+    - "kubectl get namespace -l istio-injection=enabled"
+    - "kubectl describe pod <pod> | grep -A5 'istio-proxy'"
+    - "istioctl proxy-status <pod>"
+    - "kubectl logs -l app=istiod -n istio-system --tail=50"
+    - "istioctl analyze -n <namespace>"
+  fix_commands:
+    - "kubectl label namespace <ns> istio-injection=enabled --overwrite"
+    - "kubectl rollout restart deployment/<deploy>"
+    - "istioctl proxy-config cluster <pod> -o json | jq '.[] | select(.name | contains(\"PassthroughCluster\"))'"
+  tags:
+    - istio
+    - envoy
+    - mesh
+    - sidecar
+  source: internal
+  confidence_weight: 0.9
+  root_cause: "Istio sidecar注入或配置异常导致流量拦截失败"
+
+- id: KB702
+  title: 云资源配额耗尽 (AWS/阿里云)
+  title_en: Cloud Resource Quota Exhausted
+  keywords: [quota, limit, 配额, ec2 limit, vpc limit, eip limit, resource limit, 云资源]
+  category: resource
+  severity: P1
+  common_causes:
+    - VPC/子网 IP 地址池耗尽
+    - ECS/EC2 实例数量达到上限
+    - EIP/弹性公网 IP 配额不足
+    - 安全组规则数量超限
+    - SLB/CLB 并发连接数打满
+  check_commands:
+    - "aliyun ecs DescribeAccountAttributes --region cn-hangzhou | jq '.AccountAttributeItems'"
+    - "aws ec2 describe-account-attributes --attribute-names max-instances --region us-east-1"
+    - "kubectl get nodes -o wide | wc -l"
+    - "aliyun slb DescribeLoadBalancerAttribute --LoadBalancerId <lb-id> | jq '.MaxConnections'"
+  fix_commands:
+    - "aliyun quotas CreateQuotaApplication --ProductCode ecs --QuotaActionCode max-instances --DesiredValue 200"
+    - "aws service-quotas request-service-quota-increase --service-code ec2 --quota-code L-12345678 --desired-value 100"
+    - "kubectl cordon <ip-exhausted-node> && kubectl drain <ip-exhausted-node>"
+  tags:
+    - cloud
+    - aws
+    - aliyun
+    - quota
+  source: internal
+  confidence_weight: 0.9
+  root_cause: "云平台资源配额达到上限"
+
+- id: KB703
+  title: JVM Full GC 频繁 - 应用停顿
+  title_en: Frequent Full GC - Application Stall
+  keywords: [full gc, frequent gc, gc pause, stop the world, jvm stall, 频繁GC, 应用停顿]
+  category: application
+  severity: P1
+  common_causes:
+    - 堆内存配置过小（-Xmx/-Xms 不足）
+    - 老年代空间不足触发 Concurrent Mode Failure
+    - 元空间(Metaspace)不足触发 Full GC
+    - 大对象频繁分配直接进入老年代
+    - System.gc() 显式调用
+  check_commands:
+    - "jstat -gcutil <pid> 1000 20"
+    - "jstat -gccapacity <pid>"
+    - "jmap -heap <pid> | grep -A10 'Heap Usage'"
+    - "jcmd <pid> GC.heap_info"
+    - "grep -i 'full gc' /var/log/app/gc.log | tail -20"
+  fix_commands:
+    - "java -Xms4g -Xmx4g -XX:MaxMetaspaceSize=256m -XX:+UseG1GC -jar app.jar"
+    - "jcmd <pid> GC.run  # 手动触发一次 GC 观察效果"
+    - "kubectl set resources deployment/<deploy> --limits=memory=8Gi"
+  tags:
+    - java
+    - jvm
+    - gc
+    - performance
+  source: internal
+  confidence_weight: 0.9
+  root_cause: "JVM堆内存或GC配置不当导致频繁Full GC"
+
+- id: KB704
+  title: Kafka Consumer Rebalance 风暴
+  title_en: Kafka Consumer Rebalance Storm
+  keywords: [kafka, rebalance, consumer group, rebalance storm, consumer rejoin, partition revoked]
+  category: dependency
+  severity: P1
+  common_causes:
+    - 消费者处理超时触发心跳丢失
+    - max.poll.interval.ms 小于消息处理时间
+    - session.timeout.ms 配置过短
+    - 频繁滚动发布导致消费者反复加入/退出
+    - 分区数变更触发 rebalance
+  check_commands:
+    - "./kafka-consumer-groups.sh --bootstrap-server <broker> --group <group> --describe | grep -E 'CONSUMER-ID|LAG'"
+    - "./kafka-consumer-groups.sh --bootstrap-server <broker> --group <group> --members --describe"
+    - "grep -i 'rebalance' /var/log/kafka/consumer.log | tail -30"
+    - "kubectl logs -l app=consumer-service --tail=100 | grep -iE 'revoke|assign|rebalance'"
+  fix_commands:
+    - "kubectl set env deployment/consumer MAX_POLL_INTERVAL_MS=600000 SESSION_TIMEOUT_MS=30000"
+    - "./kafka-configs.sh --bootstrap-server <broker> --entity-type topics --entity-name <topic> --alter --add-config max.poll.interval.ms=600000"
+    - kubectl rollout restart deployment/consumer --strategy=Recreate
+  tags:
+    - kafka
+    - consumer
+    - rebalance
+    - streaming
+  source: internal
+  confidence_weight: 0.9
+  root_cause: "Kafka消费者配置不当或处理超时导致频繁rebalance"
+
+- id: KB705
+  title: Nginx Rate Limit 误伤正常流量
+  title_en: Nginx Rate Limit Blocking Legitimate Traffic
+  keywords: [nginx, rate limit, 503, limit_req, 限流误伤, burst, nodelay, too many requests]
+  category: application
+  severity: P1
+  common_causes:
+    - rate limit burst 值配置过低
+    - CDN/代理 IP 被误认为单一来源
+    - 健康检查请求触发限流
+    - 限流 zone 共享导致跨域名影响
+  check_commands:
+    - "tail -100 /var/log/nginx/error.log | grep 'limiting requests'"
+    - "tail -1000 /var/log/nginx/access.log | awk '{print $9}' | sort | uniq -c | sort -rn"
+    - grep 'limit_req_zone\|limit_req' /etc/nginx/nginx.conf
+    - "nginx -T 2>&1 | grep -A5 limit_req"
+  fix_commands:
+    - "sed -i 's/rate=10r\/s/rate=50r\/s/g' /etc/nginx/nginx.conf && nginx -s reload"
+    - "sed -i 's/burst=20/burst=100/g' /etc/nginx/nginx.conf && nginx -s reload"
+    - "echo 'set_real_ip_from 10.0.0.0/8; real_ip_header X-Forwarded-For;' >> /etc/nginx/nginx.conf && nginx -s reload"
+  tags:
+    - nginx
+    - rate_limit
+    - gateway
+  source: internal
+  confidence_weight: 0.8
+  root_cause: "Nginx限流配置过于严格导致误拦截正常请求"
+
+- id: KB706
+  title: MySQL 主从复制延迟
+  title_en: MySQL Replication Lag
+  keywords: [mysql, replication, slave lag, 主从延迟, seconds behind master, relay log, binlog]
+  category: dependency
+  severity: P1
+  common_causes:
+    - 主库写入量突增（大事务/DDL）
+    - 从库硬件性能不足（IOPS/CPU）
+    - 从库同时承担大量读请求
+    - 网络延迟导致 binlog 传输慢
+    - relay log 积压
+  check_commands:
+    - "mysql -e 'SHOW SLAVE STATUS\\G' | grep -E 'Seconds_Behind_Master|Slave_IO_Running|Slave_SQL_Running'"
+    - "mysql -e 'SHOW PROCESSLIST' | grep -E 'Waiting for.*lock|Sending data'"
+    - "mysql -e 'SHOW ENGINE INNODB STATUS\\G' | grep -A5 'LATEST DETECTED DEADLOCK'"
+    - "iostat -x 1 5 | grep <disk>"
+  fix_commands:
+    - "mysql -e 'STOP SLAVE; SET GLOBAL sql_slave_skip_counter=1; START SLAVE;'"
+    - "mysql -e 'SET GLOBAL read_only=OFF;'"
+    - "mysql -e 'ALTER TABLE <table> ENGINE=InnoDB;'  # 重建表优化复制"
+  tags:
+    - mysql
+    - replication
+    - database
+  source: internal
+  confidence_weight: 0.9
+  root_cause: "MySQL主从复制延迟导致读写不一致"

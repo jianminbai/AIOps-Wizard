@@ -1,0 +1,150 @@
+# Security-related incident KB entries
+# Category: security (新分类)
+
+- id: KB501
+  title: DDoS 攻击 - 流量异常飙升
+  title_en: DDoS Attack - Abnormal Traffic Spike
+  keywords: [ddos, dos, traffic spike, 流量攻击, syn flood, http flood, waf]
+  category: security
+  severity: P0
+  common_causes:
+    - 应用层 DDoS（HTTP Flood / Slowloris）
+    - 网络层 DDoS（SYN Flood / UDP Flood）
+    - DNS Amplification 攻击
+    - 爬虫/恶意扫描导致流量突增
+  check_commands:
+    - netstat -an | grep SYN_RECV | wc -l
+    - ss -s
+    - tail -1000 /var/log/nginx/access.log | awk '{print $1}' | sort | uniq -c | sort -rn | head -20
+    - iptables -L -n -v | head -20
+    - curl -s http://localhost:9090/api/v1/query?query=rate(node_network_receive_bytes_total[5m])
+  fix_commands:
+    - iptables -A INPUT -p tcp --dport 80 -m limit --limit 25/sec --limit-burst 100 -j ACCEPT
+    - iptables -A INPUT -p tcp --dport 80 -j DROP
+    - kubectl scale deployment nginx-ingress-controller --replicas=5 -n ingress-nginx
+    - curl -XPOST 'http://waf-api/block?ip=<attacker-ip>&duration=3600'
+  tags:
+    - ddos
+    - network
+    - waf
+    - attack
+  source: internal
+  confidence_weight: 1.0
+  root_cause: "恶意流量攻击或扫描导致带宽/连接耗尽"
+
+- id: KB502
+  title: API 异常访问 - 敏感数据泄露风险
+  title_en: Abnormal API Access - Data Leak Risk
+  keywords: [api abuse, data leak, 敏感数据, unauthorized, 越权, sql injection, xss, rate limit bypass]
+  category: security
+  severity: P0
+  common_causes:
+    - API 未鉴权或鉴权绕过
+    - JWT Token 泄露/过期时间过长
+    - SQL 注入未过滤
+    - 越权访问（IDOR）
+    - 爬虫批量抓取敏感接口
+  check_commands:
+    - "grep -E '403|401|400' /var/log/nginx/access.log | tail -50"
+    - "curl -s -o /dev/null -w '%{http_code}' 'https://api.example.com/admin/users' -H 'Authorization: Bearer invalid'"
+    - "tail -200 /var/log/app.log | grep -iE 'sql injection|xss|unauthorized|forbidden'"
+    - kubectl logs -l app=waf --tail=50
+  fix_commands:
+    - kubectl rollout restart deployment/api-gateway
+    - curl -XPOST 'http://waf-api/rules' -d '{"type":"rate_limit","path":"/api/*","max_rps":100}'
+    - "kubectl set env deployment/api AUTH_REQUIRED=true"
+  tags:
+    - api
+    - security
+    - auth
+    - injection
+  source: internal
+  confidence_weight: 1.0
+  root_cause: "API鉴权缺失或被绕过，存在数据泄露风险"
+
+- id: KB503
+  title: 容器逃逸/权限提升
+  title_en: Container Escape / Privilege Escalation
+  keywords: [container escape, privilege escalation, 容器逃逸, 提权, root, cap_sys_admin, breakout]
+  category: security
+  severity: P0
+  common_causes:
+    - 容器以 privileged 模式运行
+    - 挂载了宿主机敏感目录（/proc, /sys, /var/run/docker.sock）
+    - CAP_SYS_ADMIN 等危险 capabilities 未限制
+    - 容器内可加载内核模块
+  check_commands:
+    - "kubectl get pods -A -o json | jq '.items[] | select(.spec.containers[].securityContext.privileged==true) | .metadata.name'"
+    - "docker inspect <container> | jq '.[].HostConfig.Privileged'"
+    - "docker inspect <container> | jq '.[].Mounts[] | select(.Source | startswith(\"/var/run\"))'"
+    - "kubectl auth can-i --list -n production"
+  fix_commands:
+    - "kubectl patch deployment <deploy> -p '{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"<name>\",\"securityContext\":{\"privileged\":false,\"capabilities\":{\"drop\":[\"ALL\"]}}}]}}}}'"
+    - "docker update --privileged=false <container>"
+    - "kubectl apply -f - <<EOF\napiVersion: v1\nkind: PodSecurityPolicy\nmetadata:\n  name: restricted\nspec:\n  privileged: false\nEOF"
+  tags:
+    - container
+    - security
+    - docker
+    - kubernetes
+  source: internal
+  confidence_weight: 1.0
+  root_cause: "容器安全配置不当导致逃逸风险"
+
+- id: KB504
+  title: CI/CD 凭证泄露
+  title_en: CI/CD Credential Leak
+  keywords: [credential leak, secret, token, 凭证泄露, api key, password in log, git leak]
+  category: security
+  severity: P0
+  common_causes:
+    - 密钥硬编码在代码中提交到 Git
+    - CI/CD 日志中打印了环境变量/Token
+    - .env 文件被误提交
+    - Git 历史中包含已删除的敏感信息
+  check_commands:
+    - "git log -p | grep -iE 'password|secret|token|api.?key|access.?key' | head -20"
+    - "grep -rE 'AKIA|sk-[a-zA-Z0-9]{20,}' . --exclude-dir=.git | head -10"
+    - "trufflehog filesystem . --json 2>/dev/null | head -10"
+    - "gitleaks detect --source . -v 2>/dev/null | head -20"
+  fix_commands:
+    - "git filter-branch --force --index-filter 'git rm --cached --ignore-unmatch .env' --prune-empty --tag-name-filter cat -- --all"
+    - "BFG --delete-files .env --no-blob-protection"
+    - "curl -XPOST -H 'Authorization: Bearer <token>' 'https://api.github.com/repos/org/repo/actions/secrets/NEW_KEY' -d '{\"encrypted_value\":\"...\"}'"
+  tags:
+    - git
+    - cicd
+    - credential
+    - secret
+  source: internal
+  confidence_weight: 1.0
+  root_cause: "密钥/凭证泄露到代码仓库或CI/CD日志"
+
+- id: KB505
+  title: 日志敏感信息泄露
+  title_en: Sensitive Data in Logs
+  keywords: [log leak, pii, 日志泄密, phone number, email, credit card, gdpr, 个人信息]
+  category: security
+  severity: P1
+  common_causes:
+    - 应用日志中打印了请求 body（含手机号/身份证）
+    - 错误堆栈中暴露数据库连接串
+    - Debug 模式打印了完整用户信息
+    - 日志收集管道未做脱敏处理
+  check_commands:
+    - "grep -oE '[0-9]{11}' /var/log/app/*.log | wc -l"
+    - grep -oE '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' /var/log/app/*.log | wc -l
+    - "grep -iE 'password|secret|token' /var/log/app/*.log | head -10"
+    - "grep 'jdbc:' /var/log/app/*.log | head -10"
+  fix_commands:
+    - "sed -i 's/\\([0-9]\\)\\([0-9]\\{5\\}\\)\\([0-9]\\{5\\}\\)/\\1*****\\3/g' /var/log/app/*.log"
+    - "kubectl set env deployment/app LOG_LEVEL=INFO LOG_MASK_PII=true"
+    - "kubectl apply -f log-masking-policy.yaml"
+  tags:
+    - logging
+    - pii
+    - security
+    - compliance
+  source: internal
+  confidence_weight: 0.9
+  root_cause: "日志未做脱敏处理导致敏感信息泄露"
