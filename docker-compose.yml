@@ -1,0 +1,11 @@
+version: "3.9"
+
+services:
+  aiops-wizard:
+    build: .
+    container_name: aiops-wizard
+    ports:
+      - "8766:8766"
+    environment:
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+    restart: unless-stopped
