@@ -1,0 +1,93 @@
+- id: KB401
+  title: 网络延迟/丢包 - 跨可用区/跨机房
+  title_en: Network Latency and Packet Loss
+  keywords: [network latency, packet loss, timeout, ping, traceroute, mtr, cross-az]
+  category: external
+  severity: P1
+  common_causes:
+    - 跨可用区(Cross-AZ)网络带宽超限
+    - 物理交换机/路由器故障
+    - 安全组/防火墙规则限制
+    - 云厂商网络出口 QoS 限速
+    - 网卡软中断(softirq)负载过高
+  check_commands:
+    - ping -c 10 <target-ip>
+    - mtr -r -c 10 <target-ip>
+    - traceroute <target-ip>
+    - ss -i | grep -E 'cwnd|rtt'
+    - sar -n DEV 1 5
+    - ethtool -S eth0 | grep -i error
+  fix_commands:
+    - sysctl -w net.core.rmem_max=26214400
+    - sysctl -w net.core.wmem_max=26214400
+    - sysctl -w net.ipv4.tcp_rmem='4096 87380 26214400'
+    - sysctl -w net.ipv4.tcp_wmem='4096 65536 26214400'
+    - systemctl restart network
+    - kubectl delete pod -n kube-system -l component=kube-proxy
+  tags:
+    - network
+    - latency
+    - packet-loss
+    - connectivity
+  source: external
+  confidence_weight: 0.9
+
+- id: KB402
+  title: DNS 解析失败 - 服务发现异常
+  title_en: DNS Resolution Failure
+  keywords: [dns, dns resolution, coredns, nslookup, dns timeout, nxdomain]
+  category: external
+  severity: P1
+  common_causes:
+    - CoreDNS Pod 异常或重启
+    - 上游 DNS 服务器不可达
+    - DNS 缓存过期或污染
+    - /etc/resolv.conf 配置错误
+    - Pod DNSPolicy 设置不当（ClusterFirst vs Default）
+  check_commands:
+    - kubectl get pods -n kube-system -l k8s-app=kube-dns
+    - kubectl logs -n kube-system -l k8s-app=kube-dns --tail=50
+    - nslookup <service>.<namespace>.svc.cluster.local
+    - dig @<coredns-ip> <service>.<namespace>.svc.cluster.local
+    - cat /etc/resolv.conf
+  fix_commands:
+    - kubectl rollout restart -n kube-system deployment/coredns
+    - kubectl scale deployment/coredns --replicas=3 -n kube-system
+    - kubectl delete pod -n kube-system -l k8s-app=kube-dns
+    - kubectl exec -it <pod> -- cat /etc/resolv.conf
+    - kubectl patch deployment coredns -n kube-system -p '{"spec":{"template":{"spec":{"dnsPolicy":"Default"}}}}'
+  tags:
+    - dns
+    - coredns
+    - service-discovery
+    - kubernetes
+  source: external
+  confidence_weight: 1.0
+
+- id: KB403
+  title: 第三方 API 调用超时
+  title_en: Third-party API Timeout
+  keywords: [third-party, api timeout, external service, upstream timeout, gateway timeout]
+  category: external
+  severity: P2
+  common_causes:
+    - 第三方服务限流或降级
+    - 网络链路质量下降
+    - API 认证 Token 过期
+    - 第三方服务端故障
+  check_commands:
+    - curl -w '%{http_code} %{time_total}s\n' -o /dev/null -s <third-party-url>
+    - kubectl logs -l app=<service> | grep -i 'timeout\|5xx\|upstream'
+    - kubectl exec -it <pod> -- wget -q -O /dev/null <third-party-url>
+    - mtr -r -c 5 <third-party-host>
+  fix_commands:
+    - kubectl set env deployment <service> THIRD_PARTY_TIMEOUT=30000
+    - kubectl rollout restart deployment <service>
+    - curl -XPOST 'http://<auth-server>/token/refresh' -d 'grant_type=client_credentials'
+  tags:
+    - third-party
+    - api
+    - timeout
+    - external
+  source: external
+  confidence_weight: 0.8

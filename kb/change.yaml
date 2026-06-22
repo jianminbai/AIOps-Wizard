@@ -1,0 +1,169 @@
+- id: KB301
+  title: 发布回滚 - 上线后异常
+  title_en: Release Rollback - Post-Deployment Anomaly
+  keywords: [rollback, release, deployment, canary, blue-green, regression, outage]
+  category: change
+  severity: P1
+  common_causes:
+    - 新版本代码存在未发现的 Bug
+    - 依赖 API 接口变更未同步
+    - 数据库迁移脚本未执行或执行失败
+    - 配置变更与环境不兼容
+  check_commands:
+    - kubectl rollout history deployment <deploy>
+    - kubectl rollout status deployment <deploy>
+    - kubectl describe deployment <deploy>
+    - kubectl logs -l app=<deploy> --tail=100 | grep -i 'error\|exception\|fail'
+  fix_commands:
+    - kubectl rollout undo deployment <deploy>
+    - kubectl rollout undo deployment <deploy> --to-revision=<N>
+    - helm rollback <release> <revision>
+  tags:
+    - release
+    - deploy
+    - rollback
+    - change
+  source: internal
+  confidence_weight: 1.0
+
+- id: KB302
+  title: 配置错误 - 应用启动失败
+  title_en: Configuration Error - Application Startup Failure
+  keywords: [config error, configuration, startup failure, yaml parse, env var]
+  category: change
+  severity: P1
+  common_causes:
+    - ConfigMap 内容格式错误（YAML/JSON 语法）
+    - 环境变量未定义或引用错误
+    - 配置中心（Nacos/Apollo）配置未同步
+    - 敏感信息（密码/密钥）编码错误
+  check_commands:
+    - kubectl describe configmap <name> -n <namespace>
+    - kubectl get configmap <name> -n <namespace> -o yaml | python3 -c "import sys, yaml; yaml.safe_load(sys.stdin); print('YAML OK')"
+    - kubectl logs <pod-name> --tail=100
+    - kubectl exec -it <pod-name> -- env | grep <KEY>
+  fix_commands:
+    - kubectl edit configmap <name> -n <namespace>
+    - kubectl delete pod <pod-name>
+    - kubectl rollout restart deployment <deploy>
+  tags:
+    - config
+    - configmap
+    - startup
+    - yaml
+  source: internal
+  confidence_weight: 0.9
+
+- id: KB303
+  title: CI/CD 流水线失败
+  title_en: CI/CD Pipeline Failure
+  keywords: [ci, cd, pipeline, jenkins, gitlab ci, github actions, build failure, test failure]
+  category: change
+  severity: P2
+  common_causes:
+    - 依赖包仓库不可达或版本不存在
+    - 编译环境 JDK/Node 版本不匹配
+    - 单元测试/集成测试用例失败
+    - Docker 镜像构建缓存问题
+  check_commands:
+    - curl -s 'http://<ci-server>/job/<pipeline>/lastBuild/consoleText' --tail=200
+    - kubectl logs -l job-name=<build-job> --tail=100
+    - kubectl describe pod -l job-name=<build-job>
+    - docker system df
+  fix_commands:
+    - kubectl delete job <build-job>
+    - docker system prune -f
+    - curl -XPOST 'http://<ci-server>/job/<pipeline>/build?delay=0'
+    - git clean -fdx && git pull --rebase
+  tags:
+    - cicd
+    - build
+    - pipeline
+    - automation
+  source: internal
+  confidence_weight: 0.8
+
+- id: KB304
+  title: SSL 证书即将过期
+  title_en: SSL Certificate Expiration
+  keywords: [ssl, tls, certificate, cert-manager, ingress, https, letsencrypt]
+  category: change
+  severity: P2
+  common_causes:
+    - 证书未设置自动续期
+    - cert-manager 配置错误导致签发失败
+    - 自签证书到期未主动更换
+    - DNS 验证(ACME)失败
+  check_commands:
+    - echo | openssl s_client -connect <host>:443 -servername <host> 2>/dev/null | openssl x509 -noout -dates
+    - kubectl get certificate -A
+    - kubectl describe certificate <name> -n <namespace>
+    - kubectl logs -l app=cert-manager --tail=50
+  fix_commands:
+    - kubectl delete certificate <name> && kubectl apply -f <certificate.yaml>
+    - kubectl rollout restart deployment cert-manager
+    - helm upgrade cert-manager jetstack/cert-manager --namespace cert-manager
+  tags:
+    - ssl
+    - tls
+    - certificate
+    - ingress
+  source: internal
+  confidence_weight: 0.9
+
+- id: KB305
+  title: 配置中心(Nacos/Apollo)变更未生效
+  title_en: Configuration Center Change Not Applied
+  keywords: [nacos, apollo, config center, config change, hot reload, refresh]
+  category: change
+  severity: P2
+  common_causes:
+    - 配置发布但未推送到客户端
+    - 应用未启用配置热更新
+    - 客户端 SDK 版本不兼容
+    - 配置格式变更导致解析失败
+  check_commands:
+    - curl -s 'http://<nacos>:8848/nacos/v1/ns/operator/metrics'
+    - curl -s 'http://<nacos>:8848/nacos/v1/cs/configs?dataId=<dataId>&group=<group>'
+    - kubectl logs -l app=<service> | grep -i 'nacos\|config\|refresh'
+    - kubectl exec -it <pod> -- curl -s 'http://localhost:<port>/actuator/refresh' -X POST
+  fix_commands:
+    - curl -XPOST 'http://<service>/actuator/refresh'
+    - kubectl rollout restart deployment <deploy>
+    - kubectl exec -it <pod> -- /bin/sh -c 'kill -HUP 1'
+  tags:
+    - nacos
+    - apollo
+    - config
+    - refresh
+  source: internal
+  confidence_weight: 0.8
+
+- id: KB306
+  title: ImagePullBackOff - 镜像拉取失败
+  title_en: ImagePullBackOff - Image Pull Failure
+  keywords: [imagepullbackoff, image pull, errimagepull, registry, image not found]
+  category: change
+  severity: P2
+  common_causes:
+    - 镜像标签不存在或镜像名拼写错误
+    - 镜像仓库认证失败（ImagePullSecret 缺失/过期）
+    - 镜像仓库地址不可达或限流
+    - manifest 列表格式不兼容（架构不匹配）
+  check_commands:
+    - kubectl describe pod <pod-name> | grep -A 10 'Events:'
+    - kubectl get pods -n <namespace> -o wide | grep ImagePullBackOff
+    - docker pull <image> --platform linux/amd64
+    - curl -s 'https://<registry>/v2/<image>/manifests/<tag>' | head -20
+  fix_commands:
+    - kubectl create secret docker-registry <secret-name> --docker-server=<registry> --docker-username=<user> --docker-password=<pass> -n <namespace>
+    - kubectl patch serviceaccount default -p '{"imagePullSecrets":[{"name":"<secret>"}]}' -n <namespace>
+    - kubectl set image deployment/<deploy> <container>=<image>:<correct-tag>
+  tags:
+    - image
+    - docker
+    - registry
+    - pull
+    - kubernetes
+  source: internal
+  confidence_weight: 1.0

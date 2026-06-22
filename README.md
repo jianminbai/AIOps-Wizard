@@ -152,7 +152,83 @@ open https://jianminbai.github.io/AIOps-Wizard/
 
 ---
 
-## 🧠 知识库（30 类）
+## 🧠 企业知识库管理
+
+### 架构
+
+```
+kb/                    ← YAML 知识库文件（可直接编辑）
+├── resource.yaml      ← 资源类（CPU/OOM/磁盘等）
+├── dependency.yaml    ← 依赖类（DB/Redis/ES/MQ等）
+├── application.yaml   ← 应用类（CrashLoop/慢SQL/死锁等）
+├── change.yaml        ← 变更类（发布/CI-CD/证书等）
+├── external.yaml      <- 外部类（网络/DNS等）
+└── template.yaml      ← 新增条目的模板
+
+kb_loader.py           ← 加载器 + 置信度匹配引擎
+```
+
+### 如何扩充知识库
+
+**方式一：直接编辑 YAML 文件（推荐）**
+
+```bash
+# 1. 用模板创建新条目
+cp kb/template.yaml kb/new_entry.yaml
+
+# 2. 编辑文件，填写你的经验
+vim kb/new_entry.yaml
+
+# 3. 重启 API 即可生效（无需其他操作）
+# API 会自动加载所有 YAML 文件
+```
+
+**方式二：通过 API 添加**
+
+```bash
+curl -X POST http://localhost:8766/kb \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "你的故障场景",
+    "keywords": ["关键词1", "keyword2"],
+    "category": "resource",
+    "common_causes": ["原因1", "原因2"],
+    "check_commands": ["kubectl ...", "curl ..."],
+    "fix_commands": ["systemctl restart ..."]
+  }'
+```
+
+### 置信度路由机制
+
+```
+score >= 0.70 ──→ DIRECT   直接返回知识库条目（不调 LLM，零成本）
+score >= 0.40 ──→ CONTEXT  知识库作为上下文 + LLM 深度分析
+score <  0.40 ──→ LLM_ONLY 纯 LLM 分析
+```
+
+**各字段对置信度的影响：**
+
+| 匹配类型 | 加分 | 说明 |
+| --- | --- | --- |
+| 单个关键词匹配 | +0.15 | 如 "redis"、"cpu" |
+| 标题包含匹配词 | +0.30 | 告警内容命中条目标题 |
+| 精确短语匹配 | +0.10 | 引号包裹的连续词组 |
+| 3+ 个关键词匹配 | +0.20（额外） | 多条关键词锁定场景 |
+| confidence_weight | ×权重 | YAML 中可自定义（默认 1.0）|
+
+### 企业应用场景
+
+**场景一：积累排障经验**
+
+每次故障复盘后，把结论写成一条 KB 条目，存入对应分类的 YAML 文件。下次同样的告警来的时候，系统会直接返回你的经验，不需要再查。
+
+**场景二：新员工 onboarding**
+
+新人值班时，输入告警就能看到老司机写的排查步骤和修复命令，直接复制执行。
+
+**场景三：多团队共享**
+
+不同团队有各自的 YAML 文件（`team-a.yaml`、`team-b.yaml`），API 自动合并。每个团队独立维护自己的知识库。
 
 | ID | 类别 | 故障场景 |
 | --- | --- | --- |

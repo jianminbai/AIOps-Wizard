@@ -1,0 +1,217 @@
+- id: KB101
+  title: DB 连接池耗尽
+  title_en: Database Connection Pool Exhausted
+  keywords: [connection pool, db timeout, datasource, hikari, druid, max active]
+  category: dependency
+  severity: P1
+  common_causes:
+    - 慢 SQL 导致连接长时间占用
+    - 连接泄漏（未调用 close/release）
+    - 连接池 max-active 配置过小
+    - 数据库端最大连接数限制
+  check_commands:
+    - show processlist;
+    - show global variables like 'max_connections';
+    - SELECT * FROM information_schema.PROCESSLIST WHERE COMMAND != 'Sleep';
+    - jmxterm -l <host>:<port> -n bean "com.zaxxer.hikari:type=Pool (HikariPool-1)" get ActiveConnections
+  fix_commands:
+    - kill <thread_id>;
+    - set global max_connections=500;
+    - kubectl rollout restart deployment <deploy>
+  tags:
+    - database
+    - mysql
+    - pool
+    - hikari
+  source: internal
+  confidence_weight: 1.0
+
+- id: KB102
+  title: Redis 连接超时/阻塞
+  title_en: Redis Connection Timeout
+  keywords: [redis timeout, redis blocked, redis maxclients, redis latency, jedis]
+  category: dependency
+  severity: P1
+  common_causes:
+    - Redis 慢查询阻塞
+    - 连接数达到 maxclients 上限
+    - bigkey 操作导致阻塞
+    - fork 生成 RDB 导致延迟
+  check_commands:
+    - redis-cli INFO clients
+    - redis-cli INFO stats | grep total_connections_received
+    - redis-cli SLOWLOG GET 20
+    - redis-cli --bigkeys
+  fix_commands:
+    - redis-cli CONFIG SET maxclients 10000
+    - redis-cli CLIENT KILL TYPE normal
+    - redis-cli SLAVEOF NO ONE
+  tags:
+    - redis
+    - cache
+    - timeout
+  source: internal
+  confidence_weight: 0.9
+
+- id: KB103
+  title: ES 集群状态异常
+  title_en: Elasticsearch Cluster Status Unhealthy
+  keywords: [elasticsearch, es cluster, yellow status, red status, unassigned shards]
+  category: dependency
+  severity: P2
+  common_causes:
+    - 节点故障导致分片未分配
+    - 磁盘空间不足触发只读
+    - 堆内存使用过高触发 GC
+    - 分片数不合理
+  check_commands:
+    - curl -s 'localhost:9200/_cluster/health?pretty'
+    - curl -s 'localhost:9200/_cat/allocation?v'
+    - curl -s 'localhost:9200/_cat/shards?v' | grep UNASSIGNED
+    - curl -s 'localhost:9200/_nodes/stats/jvm?pretty'
+  fix_commands:
+    - "curl -XPUT 'localhost:9200/_settings' -H 'Content-Type: application/json' -d '{\"index.blocks.read_only_allow_delete\": null}'"
+    - "curl -XPOST 'localhost:9200/_cluster/reroute?retry_failed=true'"
+    - "curl -XPUT 'localhost:9200/_cluster/settings' -H 'Content-Type: application/json' -d '{\"transient\":{\"cluster.routing.allocation.enable\":\"all\"}}'"
+  tags:
+    - elasticsearch
+    - indexing
+    - cluster
+  source: internal
+  confidence_weight: 0.9
+
+- id: KB104
+  title: MQ 消息堆积
+  title_en: Message Queue Backlog
+  keywords: [mq, kafka, rocketmq, rabbitmq, message backlog, consumer lag]
+  category: dependency
+  severity: P1
+  common_causes:
+    - 消费者消费能力不足
+    - 消费者异常退出或卡死
+    - 消息处理超时触发重试死循环
+    - 分区(Partition)数量与消费者数不匹配
+  check_commands:
+    - ./kafka-consumer-groups.sh --bootstrap-server <broker> --group <group> --describe
+    - ./kafka-run-class.sh kafka.tools.GetOffsetShell --broker-list <broker> --topic <topic> --time -1
+    - rabbitmqctl list_queues name messages messages_ready messages_unacknowledged
+  fix_commands:
+    - ./kafka-consumer-groups.sh --bootstrap-server <broker> --group <group> --reset-offsets --to-current --execute --topic <topic>
+    - kubectl scale deployment <consumer-deploy> --replicas=5
+    - kubectl rollout restart deployment <consumer-deploy>
+  tags:
+    - mq
+    - kafka
+    - consumer
+    - lag
+  source: internal
+  confidence_weight: 1.0
+
+- id: KB105
+  title: etcd 集群不稳定
+  title_en: etcd Cluster Unstable
+  keywords: [etcd, raft, leader election, kv store, kubernetes backend]
+  category: dependency
+  severity: P1
+  common_causes:
+    - 磁盘 IOPS 不足导致 fsync 延迟
+    - 网络分区导致 Leader 频繁选举
+    - etcd 空间配额(quota)不足
+    - 数据库碎片过多
+  check_commands:
+    - ETCDCTL_API=3 etcdctl --endpoints=<endpoints> endpoint health
+    - ETCDCTL_API=3 etcdctl --endpoints=<endpoints> endpoint status -w table
+    - ETCDCTL_API=3 etcdctl --endpoints=<endpoints> alarm list
+    - iostat -x 1 5
+  fix_commands:
+    - ETCDCTL_API=3 etcdctl --endpoints=<endpoints> alarm disarm
+    - ETCDCTL_API=3 etcdctl --endpoints=<endpoints> defrag --cluster
+    - ETCDCTL_API=3 etcdctl --endpoints=<endpoints> compact $(ETCDCTL_API=3 etcdctl endpoint status --write-out=json | jq -r '.[].Status.header.revision')
+  tags:
+    - etcd
+    - kubernetes
+    - consensus
+    - database
+  source: internal
+  confidence_weight: 0.9
+
+- id: KB106
+  title: ELK 日志采集延迟
+  title_en: ELK Log Collection Delay
+  keywords: [elk, elasticsearch, logstash, filebeat, log collection, kibana]
+  category: dependency
+  severity: P2
+  common_causes:
+    - Logstash/Filebeat 堆内存不足
+    - ES bulk 队列满导致反压
+    - 日志量突增超出处理能力
+    - pipeline 配置瓶颈
+  check_commands:
+    - curl -s 'localhost:9600/_node/stats/pipelines?pretty'
+    - curl -s 'localhost:9200/_cat/indices?v' | head -20
+    - curl -s 'localhost:9200/_nodes/stats/thread_pool?pretty'
+    - journalctl -u filebeat --no-pager -n 50
+  fix_commands:
+    - systemctl restart logstash
+    - systemctl restart filebeat
+    - curl -XPUT 'localhost:9200/_cluster/settings' -H 'Content-Type: application/json' -d '{"transient":{"indices.memory.index_buffer_size":"20%"}}'
+  tags:
+    - elk
+    - logging
+    - pipeline
+  source: internal
+  confidence_weight: 0.8
+
+- id: KB107
+  title: Prometheus 抓取失败/Target 不可达
+  title_en: Prometheus Scrape Failure
+  keywords: [prometheus, target down, scrape failure, up metric, metrics missing]
+  category: dependency
+  severity: P2
+  common_causes:
+    - 目标服务 endpoint 变更
+    - 指标暴露端口未配置
+    - TLS 证书过期
+    - 服务发现(Service Discovery)配置错误
+  check_commands:
+    - curl -s 'localhost:9090/api/v1/targets' | jq '.data.activeTargets[] | select(.health=="down")'
+    - curl -s 'http://<target>/metrics' | head -20
+    - curl -s 'localhost:9090/api/v1/query?query=up{job="<job>"}'
+  fix_commands:
+    - kubectl rollout restart deployment <app>
+    - kubectl delete pod <prometheus-pod>
+    - curl -XPOST 'localhost:9090/-/reload'
+  tags:
+    - prometheus
+    - monitoring
+    - metrics
+    - scrape
+  source: internal
+  confidence_weight: 0.9
+
+- id: KB108
+  title: SkyWalking 探针断连
+  title_en: SkyWalking Agent Disconnected
+  keywords: [skywalking, apm, agent, trace, oap, span]
+  category: dependency
+  severity: P2
+  common_causes:
+    - OAP Server 不可达或重启
+    - Agent gRPC 发送超时
+    - 采样率配置过高导致 OAP 过载
+    - 网络防火墙阻断 gRPC 端口(11800)
+  check_commands:
+    - "curl -s 'http://<oap-host>:12800/graphql' -X POST -H 'Content-Type: application/json' -d '{\"query\":\"{services: getAllServices(duration: {start: \\\"2024-01-01\\\", end: \\\"2024-01-02\\\", step: DAY}) {key label}}\"}'"
+    - netstat -anp | grep 11800
+    - kubectl logs -l app=skywalking-oap --tail=50
+  fix_commands:
+    - kubectl rollout restart deployment skywalking-oap
+    - kubectl rollout restart deployment <app>
+    - kubectl edit configmap agent-config -n <namespace>
+  tags:
+    - skywalking
+    - apm
+    - tracing
+    - agent
+  source: internal
+  confidence_weight: 0.8

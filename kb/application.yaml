@@ -1,0 +1,140 @@
+- id: KB201
+  title: CrashLoop - 应用崩溃重启
+  title_en: Application CrashLoop
+  keywords: [crashloop, crash, restart, exit code, sigkill, sigterm]
+  category: application
+  severity: P1
+  common_causes:
+    - 启动参数/环境变量配置错误
+    - 依赖服务不可用（DB/Redis 启动时无法连接）
+    - JVM 参数不合理导致元空间溢出
+    - 健康检查探针配置过于激进
+  check_commands:
+    - kubectl logs <pod-name> --previous --tail=200
+    - kubectl describe pod <pod-name>
+    - kubectl get events -n <namespace> --sort-by='.lastTimestamp'
+    - kubectl exec -it <pod-name> -- sh -c 'env | sort'
+  fix_commands:
+    - kubectl rollout undo deployment <deploy>
+    - kubectl set env deployment <deploy> <KEY>=<VALUE>
+    - kubectl rollout restart deployment <deploy>
+  tags:
+    - crash
+    - pod
+    - kubernetes
+    - startup
+  source: internal
+  confidence_weight: 1.0
+
+- id: KB202
+  title: 慢 SQL - 数据库查询性能劣化
+  title_en: Slow SQL Query
+  keywords: [slow sql, slow query, full table scan, index, query optimization, database performance]
+  category: application
+  severity: P2
+  common_causes:
+    - 缺少索引或索引失效
+    - 数据量增长导致全表扫描
+    - 锁等待（行锁/表锁）
+    - ORM 框架 N+1 查询问题
+  check_commands:
+    - SELECT * FROM information_schema.PROCESSLIST WHERE TIME > 5 ORDER BY TIME DESC;
+    - EXPLAIN <slow-query>;
+    - SHOW ENGINE INNODB STATUS\G
+    - SHOW GLOBAL STATUS LIKE 'Innodb_row_lock_current_waits';
+  fix_commands:
+    - CREATE INDEX idx_<name> ON <table>(<column>);
+    - ANALYZE TABLE <table>;
+    - kill <thread_id>;
+    - SET GLOBAL long_query_time = 2;
+  tags:
+    - database
+    - mysql
+    - performance
+    - index
+  source: internal
+  confidence_weight: 0.9
+
+- id: KB203
+  title: Java 死锁
+  title_en: Java Deadlock
+  keywords: [deadlock, java deadlock, thread deadlock, lock contention, thread dump]
+  category: application
+  severity: P1
+  common_causes:
+    - 多线程锁顺序不一致
+    - 嵌套锁未按统一顺序获取
+    - 同步块中包含阻塞操作
+    - 锁超时设置不合理
+  check_commands:
+    - jstack $(pgrep -f <service>) | grep -A 30 'Found one Java-level deadlock'
+    - jstack $(pgrep -f <service>) | grep -B 5 -A 15 'WAITING\|BLOCKED'
+    - jcmd $(pgrep -f <service>) Thread.print
+    - top -H -p $(pgrep -f <service>)
+  fix_commands:
+    - jstack $(pgrep -f <service>) > /tmp/threaddump_$(date +%Y%m%d%H%M).log
+    - kill -3 $(pgrep -f <service>)
+    - kubectl rollout restart deployment <deploy>
+  tags:
+    - java
+    - thread
+    - deadlock
+    - jstack
+  source: internal
+  confidence_weight: 1.0
+
+- id: KB204
+  title: APM 探针导致应用性能劣化
+  title_en: APM Agent Performance Impact
+  keywords: [apm, agent, skywalking, pinpoint, bytebuddy, instrumentation, overhead]
+  category: application
+  severity: P2
+  common_causes:
+    - 探针采样率设置过高（100% 采样）
+    - 插件加载过多（拦截了所有方法）
+    - 探针版本与应用 JDK 不兼容
+    - gRPC 上报队列背压导致应用线程阻塞
+  check_commands:
+    - jstat -gcutil $(pgrep -f <service>) 1000 5
+    - jcmd $(pgrep -f <service>) VM.native_memory summary
+    - kubectl logs <pod-name> | grep -i 'apm\|skywalking\|pinpoint' --tail=50
+    - curl -s 'http://<oap>:12800/graphql' -X POST
+  fix_commands:
+    - kubectl set env deployment <deploy> SW_AGENT_SAMPLE_RATE=10
+    - kubectl rollout restart deployment <deploy>
+    - kubectl annotate pod <pod-name> apm.skywalking/ignore=true
+  tags:
+    - apm
+    - agent
+    - performance
+    - java
+  source: internal
+  confidence_weight: 0.8
+
+- id: KB205
+  title: 熔断器触发 - 服务调用降级
+  title_en: Circuit Breaker Triggered
+  keywords: [circuit breaker, hystrix, sentinel, resilience4j, fallback, half-open]
+  category: application
+  severity: P2
+  common_causes:
+    - 下游服务响应超时率过高
+    - 熔断阈值（错误率/慢调用率）配置过低
+    - 网络抖动触发了熔断
+    - 依赖服务容量不足
+  check_commands:
+    - curl -s 'http://<service>/actuator/health' | jq .
+    - kubectl logs -l app=<service> | grep -i 'circuit\|fallback\|open\|half-open'
+    - curl -s 'http://<service>/actuator/metrics/resilience4j.circuitbreaker.calls' | jq .
+    - kubectl exec -it <pod> -- curl -s 'localhost:<port>/actuator/health'
+  fix_commands:
+    - kubectl rollout restart deployment <downstream-service>
+    - curl -XPOST 'http://<service>/actuator/circuitbreakers/<name>' -H 'Content-Type: application/json' -d '{"state":"closed"}'
+    - kubectl set env deployment <service> CIRCUIT_BREAKER_THRESHOLD=50
+  tags:
+    - circuit-breaker
+    - resilience
+    - hystrix
+    - sentinel
+  source: internal
+  confidence_weight: 0.9

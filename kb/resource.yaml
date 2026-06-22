@@ -1,0 +1,272 @@
+- id: KB001
+  title: CPU 飙高 - 应用线程阻塞
+  title_en: High CPU - Thread Blocking
+  keywords: [cpu, high cpu, cpu 100%, load average, thread blocked]
+  category: resource
+  severity: P1
+  common_causes:
+    - Full GC 频繁（Java）
+    - 死循环或无限递归
+    - 线程死锁导致 CPU 空转
+    - 业务流量突增（促销/秒杀）
+  check_commands:
+    - top -H -p $(pgrep -f order-service)
+    - jstack $(pgrep -f order-service) | grep -A 20 'RUNNABLE'
+    - vmstat 1 10
+    - pidstat -t -p $(pgrep -f order-service) 1 5
+  fix_commands:
+    - jstat -gcutil $(pgrep -f order-service) 1000 10
+    - kill -3 $(pgrep -f order-service) && jstack $(pgrep -f order-service) > /tmp/threaddump_$(date +%Y%m%d%H%M).log
+  tags:
+    - java
+    - jvm
+    - thread
+    - cpu
+  source: internal
+  confidence_weight: 1.0
+
+- id: KB002
+  title: OOM - Java 堆内存溢出
+  title_en: OutOfMemoryError - Java Heap Space
+  keywords: [oom, out of memory, java heap, OOMKiller, memory leak]
+  category: resource
+  severity: P1
+  common_causes:
+    - 堆内存配置不足（-Xmx 过小）
+    - 内存泄漏（未释放的对象引用）
+    - 大对象直接进入老年代
+    - 缓存无上限增长
+  check_commands:
+    - dmesg | grep -i 'oom\|kill'
+    - jstat -gcutil $(pgrep -f java) 1000 10
+    - jmap -heap $(pgrep -f java)
+    - jmap -histo:live $(pgrep -f java) | head -30
+  fix_commands:
+    - jmap -dump:live,format=b,file=/tmp/heapdump_$(date +%Y%m%d%H%M).hprof $(pgrep -f java)
+    - kubectl top pod -n <namespace>
+  tags:
+    - java
+    - jvm
+    - oom
+    - memory
+  source: internal
+  confidence_weight: 1.0
+
+- id: KB003
+  title: 磁盘空间满 - 日志堆积
+  title_en: Disk Full - Log Accumulation
+  keywords: [disk full, disk space, no space left, inode full, log rotation]
+  category: resource
+  severity: P2
+  common_causes:
+    - 应用日志未配置轮转（logrotate）
+    - 容器 stdout 日志未限制大小
+    - auditd 日志堆积
+    - 临时文件未清理（/tmp）
+  check_commands:
+    - df -h
+    - df -i
+    - du -sh /var/log/* | sort -rh | head -20
+    - du -sh /opt/data/* | sort -rh | head -20
+  fix_commands:
+    - journalctl --vacuum-time=3d
+    - find /var/log -name '*.log.*' -mtime +7 -delete
+    - logrotate -f /etc/logrotate.conf
+  tags:
+    - disk
+    - log
+    - storage
+  source: internal
+  confidence_weight: 0.9
+
+- id: KB004
+  title: 文件描述符耗尽
+  title_en: File Descriptor Exhaustion
+  keywords: [file descriptor, too many open files, ulimit, fd leak]
+  category: resource
+  severity: P2
+  common_causes:
+    - 应用未正确关闭文件句柄
+    - 连接池未释放导致 socket 泄漏
+    - 系统 ulimit 设置过低
+    - Netty/Epoll 连接泄漏
+  check_commands:
+    - cat /proc/<pid>/limits | grep 'open files'
+    - lsof -p <pid> | wc -l
+    - lsof -p <pid> | head -50
+    - sysctl fs.file-nr
+  fix_commands:
+    - ulimit -n 65535
+    - echo 'fs.file-max = 1000000' >> /etc/sysctl.conf && sysctl -p
+    - systemctl restart <service>
+  tags:
+    - fd
+    - ulimit
+    - system
+  source: internal
+  confidence_weight: 0.8
+
+- id: KB005
+  title: TCP TIME_WAIT 过多
+  title_en: Excessive TCP TIME_WAIT Connections
+  keywords: [tcp time_wait, time wait, connection timeout, port exhaustion, ephemral port]
+  category: resource
+  severity: P2
+  common_causes:
+    - 短连接过多未复用
+    - 反向代理/负载均衡大量连接
+    - 连接池配置不当
+    - 内核参数未优化
+  check_commands:
+    - ss -s
+    - ss -tan | grep TIME_WAIT | wc -l
+    - netstat -n | awk '/^tcp/ {print $6}' | sort | uniq -c | sort -rn
+    - cat /proc/sys/net/ipv4/ip_local_port_range
+  fix_commands:
+    - sysctl -w net.ipv4.tcp_tw_reuse=1
+    - sysctl -w net.ipv4.tcp_fin_timeout=15
+    - echo 'net.ipv4.tcp_tw_reuse=1' >> /etc/sysctl.conf
+  tags:
+    - tcp
+    - network
+    - kernel
+  source: internal
+  confidence_weight: 0.8
+
+- id: KB006
+  title: Pod Pending - 资源不足
+  title_en: Pod Pending - Insufficient Resources
+  keywords: [pod pending, pending pod, insufficient cpu, insufficient memory, node resources]
+  category: resource
+  severity: P2
+  common_causes:
+    - 集群节点 CPU/Memory 不足
+    - PVC 无法绑定（StorageClass 不存在）
+    - nodeSelector / affinity 不匹配
+    - taint 容忍度缺失
+  check_commands:
+    - kubectl describe pod <pod-name>
+    - kubectl get nodes -o wide
+    - kubectl describe node <node-name>
+    - kubectl get pvc -n <namespace>
+  fix_commands:
+    - kubectl cordon <node> && kubectl drain <node>
+    - kubectl scale deployment <deploy> --replicas=<N>
+    - kubectl taint nodes <node> key=value:NoSchedule-
+  tags:
+    - kubernetes
+    - pod
+    - scheduling
+  source: internal
+  confidence_weight: 0.9
+
+- id: KB007
+  title: HPA 无法扩缩容
+  title_en: HPA Scaling Failure
+  keywords: [hpa, horizontal pod autoscaler, scaling, autoscale, metrics unavailable]
+  category: resource
+  severity: P2
+  common_causes:
+    - metrics-server 未部署或异常
+    - 自定义 Metric API 不可达
+    - HPA 目标值设置不合理
+    - Pod 资源 request 未设置
+  check_commands:
+    - kubectl get hpa -n <namespace>
+    - kubectl describe hpa <hpa-name>
+    - kubectl get apiservice | grep metrics
+    - kubectl top pod -n <namespace>
+  fix_commands:
+    - kubectl scale deployment <deploy> --replicas=<N>
+    - kubectl delete hpa <hpa-name> --force
+    - helm upgrade --install metrics-server metrics-server/metrics-server --set args={--kubelet-insecure-tls}
+  tags:
+    - kubernetes
+    - hpa
+    - autoscaling
+  source: internal
+  confidence_weight: 0.8
+
+- id: KB008
+  title: Node NotReady
+  title_en: Kubernetes Node NotReady
+  keywords: [node notready, node not ready, node unhealthy, node status, kubelet]
+  category: resource
+  severity: P1
+  common_causes:
+    - kubelet 服务异常或停止
+    - 节点磁盘/内存资源耗尽
+    - CNI 网络插件故障
+    - 内核 OOM 或 kernel panic
+  check_commands:
+    - kubectl get nodes
+    - kubectl describe node <node-name>
+    - ssh <node-ip> 'systemctl status kubelet'
+    - ssh <node-ip> 'journalctl -u kubelet --no-pager -n 50'
+  fix_commands:
+    - ssh <node-ip> 'systemctl restart kubelet'
+    - ssh <node-ip> 'systemctl restart docker && systemctl restart kubelet'
+    - kubectl cordon <node> && kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
+  tags:
+    - kubernetes
+    - node
+    - kubelet
+  source: internal
+  confidence_weight: 1.0
+
+- id: KB009
+  title: overlay2 磁盘空间满
+  title_en: overlay2 Filesystem Full
+  keywords: [overlay2, docker disk, container disk, devicemapper, image layer, docker prune]
+  category: resource
+  severity: P2
+  common_causes:
+    - 镜像层缓存累积
+    - 未清理的已停止容器
+    - dangling 镜像（无标签镜像）
+    - 容器日志未限制大小
+  check_commands:
+    - df -h | grep overlay
+    - docker system df
+    - du -sh /var/lib/docker/overlay2/ | sort -rh | head -20
+    - docker ps -a | grep Exited
+  fix_commands:
+    - docker system prune -a -f
+    - docker image prune -f
+    - docker container prune -f
+    - docker volume prune -f
+  tags:
+    - docker
+    - container
+    - disk
+    - overlay2
+  source: internal
+  confidence_weight: 0.9
+
+- id: KB010
+  title: Pod CrashLoopBackOff
+  title_en: Pod CrashLoopBackOff
+  keywords: [crashloop, crashloopbackoff, restart, oomkilled, pod crash]
+  category: resource
+  severity: P1
+  common_causes:
+    - 应用启动失败（配置错误/依赖缺失）
+    - OOMKilled（内存超限）
+    - 存活探针(LivenessProbe)配置过严
+    - 启动脚本异常退出
+  check_commands:
+    - kubectl describe pod <pod-name>
+    - kubectl logs <pod-name> --previous
+    - kubectl logs <pod-name> --tail=100
+    - kubectl get events -n <namespace> --sort-by='.lastTimestamp'
+  fix_commands:
+    - kubectl rollout restart deployment <deploy>
+    - kubectl set resources deployment <deploy> --limits=cpu=2,memory=4Gi
+    - kubectl patch deployment <deploy> -p '{"spec":{"template":{"spec":{"containers":[{"name":"<container>","livenessProbe":{"initialDelaySeconds":30}}]}}}}'
+  tags:
+    - kubernetes
+    - pod
+    - crash
+    - restart
+  source: internal
+  confidence_weight: 1.0

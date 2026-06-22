@@ -1,0 +1,36 @@
+# =============================================================================
+# 知识库条目模板 — Knowledge Base Entry Template
+# 用途: 创建新知识条目时，复制本模板并根据实际情况填写各字段
+# =============================================================================
+
+- id: KB000                          # 【必填】唯一标识符，格式: KB + 3位数字，按分类递增
+  title: 条目标题 - 简短描述           # 【必填】中文标题，格式: "核心问题 - 具体场景"
+  title_en: Entry Title - Brief Desc # 【必填】英文标题，用于国际化搜索匹配
+  keywords:                          # 【必填】搜索关键词列表，至少3~5个，支持中英文
+    - keyword1
+    - keyword2
+    - keyword3
+  category: resource                 # 【必填】分类标识: resource/dependency/application/change/external
+  severity: P1                       # 【必填】严重等级: P0(致命)/P1(严重)/P2(一般)/P3(提示)
+  common_causes:                     # 【推荐】常见原因列表，供告警分析引擎做根因匹配
+    - 原因一描述
+    - 原因二描述
+  check_commands:                    # 【推荐】排查命令列表，按执行顺序排列
+    - command1
+    - command2
+  fix_commands:                      # 【可选】修复命令列表，部分自动化处理可实现自愈
+    - fix_command1
+    - fix_command2
+  tags:                              # 【推荐】标签列表，用于多维过滤和知识归类
+    - tag1
+    - tag2
+  source: internal                   # 【推荐】知识来源: internal(内部沉淀)/external(外部采集)/community(社区)/vendor(厂商)
+  confidence_weight: 1.0             # 【推荐】匹配权重(0.0~1.0)，值越高表示该条目在相似场景下优先级越高
+  # ---------- 以下为扩展字段，按需使用 ----------
+  # description: 详细描述，补充 title 无法涵盖的上下文信息
+  # reference: 参考链接或文档路径
+  # playbook: SOP 或应急手册链接
+  # related_kb: [KB001, KB005]  # 关联知识条目 ID 列表
+  # auto_remediation: false      # 是否支持自动化自愈
+  # last_updated: 2026-01-01     # 最后更新时间
+  # owner: SRE团队                # 责任人/团队
