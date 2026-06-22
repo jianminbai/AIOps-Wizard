@@ -153,11 +153,12 @@
     </div>
     <div class="row" style="margin-top: 8px;">
       <div style="flex: 3;">
-        <label>API Key <span style="color:#ffaa00;">(required if backend has auth)</span></label>
-        <input id="apiKey" type="password" placeholder="Enter your API Key">
+        <label>API Key <span style="color:#66bb6a;">(built-in, automatically used)</span></label>
+        <input id="apiKey" type="text" value="WKgM...FC78=" readonly
+          style="background:#1a2a3a; color:#8899aa; cursor:default; opacity:0.8;">
       </div>
       <div style="flex: 1; display: flex; align-items: flex-end;">
-        <button class="btn" onclick="saveApiKey()" style="padding: 12px 16px; font-size: 14px; width: 100%; background:#2a3a4a; color:#e0e0e0;">🔑 Save Key</button>
+        <button class="btn" onclick="copyKey()" style="padding: 12px 16px; font-size: 14px; width: 100%; background:#2a3a4a; color:#e0e0e0;">📋 Copy Key</button>
       </div>
     </div>
     <div style="font-size: 12px; color: #8899aa; margin-top: 6px;">
@@ -210,6 +211,12 @@
   <div id="errorSection" style="display:none;">
     <div class="card error" id="errorContent"></div>
   </div>
+
+  <!-- Usage Quota -->
+  <div id="quotaSection" class="card" style="display:none; border-color: #2a3a4a;">
+    <div class="card-title">📊 Today's Usage Quota</div>
+    <div id="quotaContent"></div>
+  </div>
 </div>
 
 <script>
@@ -224,10 +231,13 @@ if (apiFromUrl) {
   localStorage.setItem('aiops_api_endpoint', apiFromUrl);
 }
 
-// API Key resolution: URL param > localStorage
+// Hardcoded default API Key (shown masked in UI, used automatically)
+const DEFAULT_API_KEY = 'WKgMd6CAjaYoTJM9s4JiNG8LWye1pfAO0teGnBuFC78=';
+
+// API Key resolution: URL param > localStorage > hardcoded default
 const keyFromUrl = urlParams.get('key');
 const keyFromStorage = localStorage.getItem('aiops_api_key');
-const API_KEY = keyFromUrl || keyFromStorage || '';
+const API_KEY = keyFromUrl || keyFromStorage || DEFAULT_API_KEY;
 if (keyFromUrl) {
   localStorage.setItem('aiops_api_key', keyFromUrl);
 }
@@ -238,10 +248,8 @@ document.addEventListener('DOMContentLoaded', function() {
   if (endpointInput) {
     endpointInput.value = localStorage.getItem('aiops_api_endpoint') || DEFAULT_API;
   }
-  const keyInput = document.getElementById('apiKey');
-  if (keyInput && API_KEY) {
-    keyInput.value = API_KEY;
-  }
+  // Load quota on page load
+  loadQuota();
 });
 function saveApiEndpoint() {
   const val = document.getElementById('apiEndpoint').value.trim();
@@ -250,13 +258,83 @@ function saveApiEndpoint() {
   // Reload to apply
   location.reload();
 }
-function saveApiKey() {
-  const val = document.getElementById('apiKey').value.trim();
-  localStorage.setItem('aiops_api_key', val);
-  alert('API Key saved!');
-  // Reload to apply
-  location.reload();
+function copyKey() {
+  navigator.clipboard.writeText(DEFAULT_API_KEY).then(() => {
+    const btn = event.target;
+    const orig = btn.textContent;
+    btn.textContent = '✅ Copied!';
+    btn.style.background = '#00d4aa33';
+    setTimeout(() => { btn.textContent = orig; btn.style.background = ''; }, 1500);
+  });
 }
+
+// ── Usage Quota ──
+function renderQuota(q) {
+  const div = document.getElementById('quotaContent');
+  if (!q) { document.getElementById('quotaSection').style.display = 'none'; return; }
+
+  const rateLimit = q.rate_limit || '?';
+  const myLimit = q.quota?.my_llm_limit || 0;
+  const myUsed = q.quota?.my_llm_today || 0;
+  const globalLimit = q.quota?.global_llm_limit || 0;
+  const globalUsed = q.quota?.global_llm_today || 0;
+  const myRemaining = myLimit - myUsed;
+  const globalRemaining = globalLimit - globalUsed;
+
+  // Progress bar percentage
+  const myPct = myLimit > 0 ? Math.min(100, Math.round(myUsed / myLimit * 100)) : 0;
+  const globalPct = globalLimit > 0 ? Math.min(100, Math.round(globalUsed / globalLimit * 100)) : 0;
+  const barColor = myPct > 80 ? '#ff4444' : myPct > 50 ? '#ffaa00' : '#00d4aa';
+
+  div.innerHTML = `
+    <div style="display:flex; gap:24px; flex-wrap:wrap;">
+      <div style="flex:1; min-width:160px;">
+        <div style="font-size:12px; color:#8899aa; margin-bottom:4px;">
+          ⚡ Rate Limit: <strong style="color:#e0e0e0;">${rateLimit} requests/min/IP</strong>
+        </div>
+      </div>
+      <div style="flex:2; min-width:200px;">
+        <div style="font-size:12px; color:#8899aa; margin-bottom:4px;">
+          🎯 My LLM Calls Today: <strong style="color:#e0e0e0;">${myUsed}</strong> / ${myLimit}
+          <span style="color:${myRemaining > 0 ? '#66bb6a' : '#ff4444'}; margin-left:8px;">
+            (${myRemaining} remaining)
+          </span>
+        </div>
+        <div style="background:#0f1923; border-radius:4px; height:8px; overflow:hidden;">
+          <div style="background:${barColor}; width:${myPct}%; height:100%; border-radius:4px; transition:width 0.3s;"></div>
+        </div>
+      </div>
+      <div style="flex:2; min-width:200px;">
+        <div style="font-size:12px; color:#8899aa; margin-bottom:4px;">
+          🌐 Global LLM Calls Today: <strong style="color:#e0e0e0;">${globalUsed}</strong> / ${globalLimit}
+          <span style="color:${globalRemaining > 0 ? '#66bb6a' : '#ff4444'}; margin-left:8px;">
+            (${globalRemaining} remaining)
+          </span>
+        </div>
+        <div style="background:#0f1923; border-radius:4px; height:8px; overflow:hidden;">
+          <div style="background:#4488ff; width:${globalPct}%; height:100%; border-radius:4px; transition:width 0.3s;"></div>
+        </div>
+      </div>
+    </div>
+    <div style="font-size:11px; color:#667788; margin-top:8px; border-top:1px solid #2a3a4a; padding-top:6px;">
+      💡 DIRECT route (confidence ≥ 0.70) is free — no LLM quota consumed.
+    </div>
+  `;
+  document.getElementById('quotaSection').style.display = 'block';
+}
+
+async function loadQuota() {
+  try {
+    const resp = await fetch(API + '/health');
+    if (resp.ok) {
+      const data = await resp.json();
+      renderQuota(data);
+    }
+  } catch (e) {
+    // Silently ignore — quota display is non-critical
+  }
+}
+
 const examples = [
   {
     text: `Incident: order-service Pod CrashLoopBackOff\nService: order-service\nSeverity: P1\n\nPod status: CrashLoopBackOff, restarted 5 times in 10 minutes\nLogs: "java.lang.OutOfMemoryError: Java heap space" at startup\nResources: memory limit 512Mi, CPU limit 500m`
@@ -324,6 +402,9 @@ async function analyze() {
     
     // Raw JSON
     document.getElementById('rawJson').textContent = JSON.stringify(data, null, 2);
+
+    // Refresh quota after each analysis
+    loadQuota();
     
   } catch (err) {
     renderError('Network error: ' + err.message);
