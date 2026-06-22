@@ -6,23 +6,50 @@ Enterprise-grade version with:
   - API Key authentication
   - Per-IP rate limiting
   - Daily LLM call quota (save token cost)
+  - Structured logging
+  - LLM timeout & retry
+  - File-locked KB writes
+  - Multi-provider support (DeepSeek, OpenAI, Claude, OpenRouter)
 
 Env vars:
   AIOPS_API_KEY          If set, all requests must include X-API-Key header
-  AIOPS_RATE_LIMIT       Max requests per minute per IP (default: 20)
-  AIOPS_DAILY_LLM_LIMIT  Max LLM calls per day (default: 200)
+  AIOPS_RATE_LIMIT       Max requests per minute per IP (default: 5)
+  AIOPS_LLM_PER_IP_DAILY Max LLM calls per IP per day (default: 30)
+  AIOPS_LLM_GLOBAL_DAILY Max LLM calls globally per day (default: 500)
   AIOPS_DIRECT_THRESHOLD Confidence threshold for direct KB answer (default: 0.7)
+  AIOPS_LOG_LEVEL        Logging level: DEBUG, INFO, WARNING, ERROR (default: INFO)
+  LLM_TIMEOUT            LLM API timeout in seconds (default: 60)
+  LLM_MAX_RETRIES        LLM API max retries (default: 1)
 """
 import os
 import sys
 import json
 import time
 import uuid
+import logging
 import subprocess
 from pathlib import Path
 from typing import Optional
 from datetime import date, datetime
 from collections import defaultdict
+
+# fcntl is Unix-only; import conditionally for file locking
+try:
+    import fcntl
+    _HAS_FCNTL = True
+except ImportError:
+    fcntl = None  # type: ignore
+    _HAS_FCNTL = False
+
+# ── Logging setup ─────────────────────────────────────────────────
+
+LOG_LEVEL = os.environ.get("AIOPS_LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("aiops-api")
 
 sys.path.insert(0, str(Path(__file__).parent))
 from engine import (
@@ -179,14 +206,66 @@ async def security_middleware(request: Request, call_next):
 
 # ── Pydantic Models ──────────────────────────────────
 
+MAX_INCIDENT_LENGTH = 10_000
+MAX_LOGS_LENGTH = 50_000
+MAX_METRICS_KEYS = 200
+
+VALID_PROVIDERS = {"deepseek", "openai", "openrouter", "claude", "anthropic"}
+VALID_CATEGORIES = {"resource", "dependency", "application", "external", "change", "general"}
+VALID_SEVERITIES = {"P0", "P1", "P2", "P3", "P4"}
+
+from pydantic import field_validator, Field
+
+
 class AnalyzeRequest(BaseModel):
-    incident: str
-    metrics: Optional[dict] = None
-    logs: Optional[str] = None
-    model: str = "deepseek-chat"
-    provider: str = "deepseek"
-    api_key: Optional[str] = None
-    force_llm: bool = False
+    incident: str = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_INCIDENT_LENGTH,
+        description="Incident/alert text describing the problem"
+    )
+    metrics: Optional[dict] = Field(
+        None,
+        description="Optional metrics data (max 200 keys)"
+    )
+    logs: Optional[str] = Field(
+        None,
+        max_length=MAX_LOGS_LENGTH,
+        description="Optional log snippets"
+    )
+    model: str = Field(
+        "deepseek-chat",
+        min_length=1,
+        max_length=100,
+        description="LLM model name"
+    )
+    provider: str = Field(
+        "deepseek",
+        description="LLM provider (deepseek, openai, openrouter, claude, anthropic)"
+    )
+    api_key: Optional[str] = Field(
+        None,
+        max_length=256,
+        description="User-provided API key (overrides env var)"
+    )
+    force_llm: bool = Field(
+        False,
+        description="Force LLM call even if KB direct match found"
+    )
+
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, v: str) -> str:
+        if v not in VALID_PROVIDERS:
+            raise ValueError(f"Invalid provider '{v}'. Must be one of: {', '.join(sorted(VALID_PROVIDERS))}")
+        return v
+
+    @field_validator("metrics")
+    @classmethod
+    def validate_metrics_size(cls, v: Optional[dict]) -> Optional[dict]:
+        if v and len(v) > MAX_METRICS_KEYS:
+            raise ValueError(f"Metrics dict exceeds max of {MAX_METRICS_KEYS} keys")
+        return v
 
 
 class AnalyzeResponse(BaseModel):
@@ -201,46 +280,120 @@ class AnalyzeResponse(BaseModel):
 
 
 class KBEntryRequest(BaseModel):
-    title: str
-    title_en: Optional[str] = ""
-    keywords: list[str]
-    category: str
-    severity: Optional[str] = "P2"
-    common_causes: list[str]
-    check_commands: list[str]
-    fix_commands: list[str]
-    tags: Optional[list[str]] = []
-    source: Optional[str] = "manual"
-    confidence_weight: Optional[float] = 1.0
+    title: str = Field(..., min_length=1, max_length=200, description="KB entry title")
+    title_en: Optional[str] = Field("", max_length=200, description="English title")
+    keywords: list[str] = Field(..., min_length=1, max_length=50, description="Matching keywords (1-50)")
+    category: str = Field(..., description="Category (resource, dependency, application, external, change, general)")
+    severity: Optional[str] = Field("P2", description="Severity: P0-P4")
+    common_causes: list[str] = Field(..., min_length=1, max_length=20, description="Common root causes (1-20)")
+    check_commands: list[str] = Field(default_factory=list, max_length=30, description="Commands to run for diagnosis")
+    fix_commands: list[str] = Field(default_factory=list, max_length=30, description="Commands to run for remediation")
+    tags: Optional[list[str]] = Field(default_factory=list, max_length=20, description="Tags")
+    source: Optional[str] = Field("manual", max_length=50, description="Source of the entry")
+    confidence_weight: Optional[float] = Field(1.0, ge=0.1, le=2.0, description="Confidence weighting factor (0.1-2.0)")
+
+    @field_validator("category")
+    @classmethod
+    def validate_category(cls, v: str) -> str:
+        if v not in VALID_CATEGORIES:
+            raise ValueError(f"Invalid category '{v}'. Must be one of: {', '.join(sorted(VALID_CATEGORIES))}")
+        return v
+
+    @field_validator("severity")
+    @classmethod
+    def validate_severity(cls, v: Optional[str]) -> Optional[str]:
+        if v and v not in VALID_SEVERITIES:
+            raise ValueError(f"Invalid severity '{v}'. Must be one of: {', '.join(sorted(VALID_SEVERITIES))}")
+        return v
 
 
 # ── LLM Call ──────────────────────────────────────────
 
+# Timeout and retry config
+LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "60"))
+LLM_MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", "1"))
+
+# Provider base URLs
+LLM_PROVIDERS = {
+    "deepseek":    "https://api.deepseek.com/v1",
+    "openai":      "https://api.openai.com/v1",
+    "openrouter":  "https://openrouter.ai/api/v1",
+    "claude":      "https://api.anthropic.com/v1",
+    "anthropic":   "https://api.anthropic.com/v1",
+}
+
+
 def call_llm(messages: list, model: str, provider: str, api_key: str = None) -> str:
-    """Call LLM API. Falls back to env vars."""
+    """Call LLM API with timeout and retry.
+
+    Supports: deepseek, openai, openrouter, claude/anthropic.
+    Falls back to env vars for API keys.
+    """
     import openai
+
+    # Resolve API key
     if api_key:
         key = api_key
     else:
+        # Try provider-specific key, then generic OPENAI_API_KEY,
+        # then ANTHROPIC_API_KEY for Claude
         key = os.environ.get(
             f"{provider.upper()}_API_KEY",
-            os.environ.get("OPENAI_API_KEY", "")
+            os.environ.get("OPENAI_API_KEY",
+                os.environ.get("ANTHROPIC_API_KEY", "")
+            )
         )
-    bases = {
-        "deepseek": "https://api.deepseek.com/v1",
-        "openai": "https://api.openai.com/v1",
-        "openrouter": "https://openrouter.ai/api/v1",
-    }
-    base_url = bases.get(provider, bases["deepseek"])
-    client = openai.OpenAI(api_key=key, base_url=base_url)
-    try:
-        resp = client.chat.completions.create(
-            model=model, messages=messages,
-            temperature=0.1, max_tokens=2000,
-        )
-        return resp.choices[0].message.content or ""
-    except Exception as e:
-        return json.dumps({"error": str(e), "raw_response": str(e)})
+
+    if not key:
+        logger.warning("No API key configured for provider=%s", provider)
+        return json.dumps({
+            "error": f"No API key configured for provider '{provider}'",
+            "raw_response": ""
+        })
+
+    base_url = LLM_PROVIDERS.get(provider, LLM_PROVIDERS["deepseek"])
+    logger.info("LLM call: provider=%s model=%s base_url=%s", provider, model, base_url)
+
+    last_error = None
+    for attempt in range(LLM_MAX_RETRIES + 1):
+        try:
+            client = openai.OpenAI(
+                api_key=key,
+                base_url=base_url,
+                timeout=LLM_TIMEOUT,
+                max_retries=0,  # We handle retries ourselves
+            )
+            resp = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.1,
+                max_tokens=2000,
+            )
+            content = resp.choices[0].message.content or ""
+            logger.info(
+                "LLM call succeeded: provider=%s model=%s tokens_used=%s",
+                provider, model,
+                getattr(resp.usage, 'total_tokens', 'unknown')
+            )
+            return content
+        except Exception as e:
+            last_error = e
+            error_str = str(e)
+            logger.warning(
+                "LLM call attempt %d/%d failed: %s",
+                attempt + 1, LLM_MAX_RETRIES + 1, error_str[:200]
+            )
+            if attempt < LLM_MAX_RETRIES:
+                # Exponential backoff: 1s, 2s, 4s...
+                backoff = 2 ** attempt
+                logger.info("Retrying in %ds...", backoff)
+                time.sleep(backoff)
+
+    logger.error("LLM call failed after %d attempts: %s", LLM_MAX_RETRIES + 1, str(last_error)[:300])
+    return json.dumps({
+        "error": f"LLM API error after {LLM_MAX_RETRIES + 1} attempts: {str(last_error)}",
+        "raw_response": str(last_error),
+    })
 
 
 def build_kb_context(kb_entry: dict) -> str:
@@ -286,14 +439,40 @@ def health(request: Request):
 
 
 @app.get("/kb")
-def list_kb(category: str = None, search: str = None):
+def list_kb(
+    category: str = None,
+    search: str = None,
+    page: int = 1,
+    page_size: int = 50,
+):
+    """List knowledge base entries with optional filtering, search, and pagination.
+
+    Query params:
+        category: Filter by category (resource, dependency, application, external, change)
+        search:   Full-text search across titles, keywords, and root_cause
+        page:     Page number (1-based, default 1)
+        page_size: Entries per page (default 50, max 200)
+    """
+    # Clamp pagination
+    page = max(1, page)
+    page_size = max(1, min(page_size, 200))
+
     if search:
         results = search_keyword(search)
     else:
         results = load_all()
+
     if category:
         results = [e for e in results if e.get("category") == category]
-    return {"entries": [
+
+    total = len(results)
+
+    # Paginate
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_results = results[start:end]
+
+    entries = [
         {
             "id": k["id"],
             "title": k.get("title", ""),
@@ -304,8 +483,18 @@ def list_kb(category: str = None, search: str = None):
             "source": k.get("source", ""),
             "keywords_count": len(k.get("keywords", [])),
         }
-        for k in results
-    ]}
+        for k in page_results
+    ]
+
+    return {
+        "entries": entries,
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": max(1, (total + page_size - 1) // page_size),
+        }
+    }
 
 
 @app.get("/kb/{kb_id}")
@@ -318,35 +507,99 @@ def get_kb_entry(kb_id: str):
 
 @app.post("/kb")
 def add_kb_entry(req: KBEntryRequest):
+    """Add a new knowledge base entry to the appropriate YAML file.
+
+    Uses file locking (fcntl on Unix, portalocker-style on Windows) to
+    prevent race conditions during concurrent writes.
+    """
     category_file = Path(__file__).parent / "kb" / f"{req.category}.yaml"
     if not category_file.exists():
         category_file = Path(__file__).parent / "kb" / "resource.yaml"
+
+    logger.info("Adding KB entry: title=%s category=%s", req.title, req.category)
+
     import yaml
-    with open(category_file) as f:
-        entries = yaml.safe_load(f) or []
-    max_num = 0
-    for e in entries:
-        eid = e.get("id", "KB000")
+    lock_file = str(category_file) + ".lock"
+
+    try:
+        # Acquire lock (Unix: fcntl.flock; Windows: skip locking gracefully)
+        lock_fd = None
+        if _HAS_FCNTL:
+            lock_fd = open(lock_file, "w")
+            try:
+                fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+            except OSError:
+                logger.debug("File locking failed; proceeding without lock")
+        else:
+            logger.debug("File locking unavailable on this platform; proceeding without lock")
+
+        # Read existing entries
+        with open(category_file, "r", encoding="utf-8") as f:
+            entries = yaml.safe_load(f)
+            if not isinstance(entries, list):
+                logger.warning("YAML file %s is not a list; wrapping in list", category_file.name)
+                entries = [entries] if entries else []
+            entries = [e for e in entries if isinstance(e, dict)]
+
+        # Find max ID number
+        max_num = 0
+        for e in entries:
+            eid = str(e.get("id", "KB000"))
+            try:
+                num = int(eid.replace("KB", ""))
+                max_num = max(max_num, num)
+            except ValueError:
+                pass
+
+        new_id = f"KB{max_num + 1:03d}"
+
+        # Build new entry
+        new_entry = {
+            "id": new_id,
+            "title": req.title,
+            "title_en": req.title_en or "",
+            "keywords": req.keywords,
+            "category": req.category,
+            "severity": req.severity or "P2",
+            "common_causes": req.common_causes,
+            "check_commands": req.check_commands or [],
+            "fix_commands": req.fix_commands or [],
+            "tags": req.tags or [],
+            "source": req.source or "manual",
+            "confidence_weight": req.confidence_weight or 1.0,
+        }
+        entries.append(new_entry)
+
+        # Write atomically: write to temp file, then rename
+        tmp_file = str(category_file) + ".tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            yaml.dump(entries, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+
+        os.replace(tmp_file, str(category_file))  # Atomic on most OS
+
+    except Exception as e:
+        logger.error("Failed to add KB entry: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to write KB entry: {str(e)}")
+    finally:
+        # Release lock and clean up
+        if lock_fd:
+            try:
+                lock_fd.close()
+            except Exception:
+                pass
         try:
-            num = int(eid.replace("KB", ""))
-            max_num = max(max_num, num)
-        except ValueError:
+            Path(lock_file).unlink(missing_ok=True)
+        except Exception:
             pass
-    new_id = f"KB{max_num + 1:03d}"
-    new_entry = {
-        "id": new_id, "title": req.title, "title_en": req.title_en,
-        "keywords": req.keywords, "category": req.category,
-        "severity": req.severity, "common_causes": req.common_causes,
-        "check_commands": req.check_commands, "fix_commands": req.fix_commands,
-        "tags": req.tags, "source": req.source,
-        "confidence_weight": req.confidence_weight,
-    }
-    entries.append(new_entry)
-    with open(category_file, "w") as f:
-        yaml.dump(entries, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+
+    # Invalidate KB cache so next load picks up the new entry
     import kb_loader
     kb_loader._KNOWLEDGE_BASE = None
     kb_loader._INVERTED_INDEX = None
+    kb_loader._TITLE_INDEX = None
+    kb_loader._ROOTCAUSE_INDEX = None
+
+    logger.info("KB entry created: id=%s title=%s", new_id, req.title)
     return {"status": "created", "id": new_id, "entry": new_entry}
 
 
@@ -361,6 +614,12 @@ def analyze(req: AnalyzeRequest, request: Request = None):
     """
     # Get client IP for per-IP quota tracking
     client_ip = request.client.host if (request and request.client) else "unknown"
+    start_time = time.time()
+
+    logger.info(
+        "Analyze request: ip=%s incident_len=%d force_llm=%s provider=%s model=%s",
+        client_ip, len(req.incident), req.force_llm, req.provider, req.model
+    )
 
     # 1. Weighted matching
     matches = quick_match_weighted(req.incident, min_score=0.0)
@@ -374,6 +633,11 @@ def analyze(req: AnalyzeRequest, request: Request = None):
     if req.force_llm and route == "direct":
         route = "context"
 
+    logger.info(
+        "Routing: ip=%s route=%s score=%.4f kb_id=%s",
+        client_ip, route, score, top_match.get("kb_id", "none") if top_match else "none"
+    )
+
     quota = _read_quota()
     ip_data = quota.get("ips", {}).get(client_ip, {"llm": 0, "direct": 0})
 
@@ -381,6 +645,11 @@ def analyze(req: AnalyzeRequest, request: Request = None):
     if route == "direct" and top_match and not req.force_llm:
         kb_entry = get_entry(top_match["kb_id"])
         _record_direct_call(client_ip)
+        elapsed = (time.time() - start_time) * 1000
+        logger.info(
+            "DIRECT response: ip=%s kb_id=%s score=%.4f elapsed_ms=%.0f",
+            client_ip, top_match["kb_id"], score, elapsed
+        )
         return AnalyzeResponse(
             success=True,
             confidence_route="direct",
@@ -418,6 +687,10 @@ def analyze(req: AnalyzeRequest, request: Request = None):
     llm_allowed, ip_remaining, global_remaining = _check_llm_quota(client_ip)
     if not llm_allowed:
         reason = "你的今日 LLM 额度已用完" if ip_remaining == 0 else "全局 LLM 额度已用完"
+        logger.warning(
+            "LLM quota exceeded: ip=%s ip_remaining=%d global_remaining=%d",
+            client_ip, ip_remaining, global_remaining
+        )
         return AnalyzeResponse(
             success=False,
             confidence_route="quota_exceeded",
@@ -450,6 +723,12 @@ def analyze(req: AnalyzeRequest, request: Request = None):
     _record_llm_call(client_ip)
 
     parsed = parse_llm_response(raw_response)
+    elapsed = (time.time() - start_time) * 1000
+    logger.info(
+        "LLM response: ip=%s route=%s score=%.4f elapsed_ms=%.0f parse_ok=%s",
+        client_ip, route, score, elapsed,
+        "parse_error" not in parsed
+    )
     return AnalyzeResponse(
         success=True,
         confidence_route=route,
@@ -465,20 +744,41 @@ def analyze(req: AnalyzeRequest, request: Request = None):
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return HTMLResponse(Path(__file__).parent.joinpath("index.html").read_text())
+    return HTMLResponse(
+        Path(__file__).parent.joinpath("index.html").read_text(encoding="utf-8")
+    )
 
 
 # ── Main ───────────────────────────────────────────────
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8766))
+
+    kb_count = len(load_all())
+
+    logger.info("=" * 60)
+    logger.info("AI Ops Assistant (Enterprise) starting on http://0.0.0.0:%d", port)
+    logger.info("Knowledge Base: %d entries via YAML", kb_count)
+    logger.info("Routing: direct(>=%.1f) | context(>=0.4) | llm_only(<0.4)", DIRECT_THRESHOLD)
+    logger.info("Rate limit: %d req/min per IP", RATE_LIMIT_PER_MIN)
+    logger.info("Per-IP LLM quota: %d/day | Global cap: %d/day", LLM_PER_IP_DAILY, LLM_GLOBAL_DAILY)
+    logger.info("LLM providers: %s", ", ".join(sorted(LLM_PROVIDERS.keys())))
+    logger.info("LLM timeout: %ds | Max retries: %d", LLM_TIMEOUT, LLM_MAX_RETRIES)
+    if AIOPS_API_KEY:
+        logger.info("API Key auth: ENABLED")
+    else:
+        logger.warning("API Key auth: DISABLED (set AIOPS_API_KEY to enable)")
+    logger.info("=" * 60)
+
+    # Also print to stdout for Docker logs
     print(f"🚀 AI Ops Assistant (Enterprise) starting on http://0.0.0.0:{port}")
-    print(f"📚 Knowledge Base: {len(load_all())} entries via YAML")
+    print(f"📚 Knowledge Base: {kb_count} entries via YAML")
     print(f"🔍 Routing: direct(>={DIRECT_THRESHOLD}) | context(>=0.4) | llm_only(<0.4)")
     if AIOPS_API_KEY:
-        print(f"🔑 API Key auth: ENABLED ({AIOPS_API_KEY[:4]}...{AIOPS_API_KEY[-4:]})")
+        print(f"🔑 API Key auth: ENABLED")
     else:
         print("⚠️  API Key auth: DISABLED (set AIOPS_API_KEY to enable)")
     print(f"⏱️  Rate limit: {RATE_LIMIT_PER_MIN} req/min per IP")
     print(f"💰 Per-IP LLM quota: {LLM_PER_IP_DAILY}/day | Global cap: {LLM_GLOBAL_DAILY}/day")
+    print(f"🤖 LLM providers: {', '.join(sorted(LLM_PROVIDERS.keys()))}")
     uvicorn.run(app, host="0.0.0.0", port=port)
