@@ -63,18 +63,19 @@ app.add_middleware(
 # ══════════════════════════════════════════════════════════════════════
 
 AIOPS_API_KEY = os.environ.get("AIOPS_API_KEY", "").strip()
-RATE_LIMIT_PER_MIN = int(os.environ.get("AIOPS_RATE_LIMIT", "20"))
-DAILY_LLM_LIMIT = int(os.environ.get("AIOPS_DAILY_LLM_LIMIT", "200"))
+RATE_LIMIT_PER_MIN = int(os.environ.get("AIOPS_RATE_LIMIT", "5"))
+# Daily LLM quota: per-IP limit AND global cap
+LLM_PER_IP_DAILY = int(os.environ.get("AIOPS_LLM_PER_IP_DAILY", "30"))
+LLM_GLOBAL_DAILY = int(os.environ.get("AIOPS_LLM_GLOBAL_DAILY", "500"))
 DIRECT_THRESHOLD = float(os.environ.get("AIOPS_DIRECT_THRESHOLD", "0.7"))
 
-# ── Rate limiter (in-memory) ──
+# ── Rate limiter (per-IP, in-memory) ──
 _rate_store: dict[str, list[float]] = defaultdict(list)
 
 def _check_rate_limit(ip: str) -> tuple[bool, int]:
-    """Returns (allowed, remaining). Cleanup stale entries every check."""
+    """Returns (allowed, remaining). Minutes sliding window."""
     now = time.time()
-    window = 60.0  # 1 minute
-    # Clean old entries
+    window = 60.0
     _rate_store[ip] = [t for t in _rate_store[ip] if now - t < window]
     count = len(_rate_store[ip])
     if count >= RATE_LIMIT_PER_MIN:
@@ -82,7 +83,7 @@ def _check_rate_limit(ip: str) -> tuple[bool, int]:
     _rate_store[ip].append(now)
     return True, RATE_LIMIT_PER_MIN - count - 1
 
-# ── Daily LLM counter (persisted to file) ──
+# ── Daily LLM quota (persisted: per-IP + global cap) ──
 _QUOTA_FILE = Path(__file__).parent / ".llm_quota.json"
 
 def _get_today() -> str:
@@ -95,26 +96,41 @@ def _read_quota() -> dict:
             return data
     except (FileNotFoundError, json.JSONDecodeError, ValueError):
         pass
-    return {"date": _get_today(), "llm_count": 0, "direct_count": 0}
+    return {"date": _get_today(), "ips": {}, "global_llm": 0, "global_direct": 0}
 
 def _save_quota(data: dict):
     _QUOTA_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
 
-def _check_llm_quota() -> tuple[bool, int]:
-    """Returns (allowed, remaining_today)."""
+def _check_llm_quota(ip: str) -> tuple[bool, int, int]:
+    """Returns (allowed, remaining_this_ip, remaining_global).
+       Only counts LLM calls (direct KB hits are free).
+    """
     data = _read_quota()
-    if data["llm_count"] >= DAILY_LLM_LIMIT:
-        return False, 0
-    return True, DAILY_LLM_LIMIT - data["llm_count"]
+    ip_data = data.get("ips", {}).get(ip, {"llm": 0})
+    ip_used = ip_data.get("llm", 0)
+    global_used = data.get("global_llm", 0)
 
-def _record_llm_call():
+    if ip_used >= LLM_PER_IP_DAILY:
+        return False, 0, LLM_GLOBAL_DAILY - global_used
+    if global_used >= LLM_GLOBAL_DAILY:
+        return False, LLM_PER_IP_DAILY - ip_used, 0
+
+    return True, LLM_PER_IP_DAILY - ip_used, LLM_GLOBAL_DAILY - global_used
+
+def _record_llm_call(ip: str):
     data = _read_quota()
-    data["llm_count"] = data.get("llm_count", 0) + 1
+    ips = data.setdefault("ips", {})
+    ip_data = ips.setdefault(ip, {"llm": 0, "direct": 0})
+    ip_data["llm"] = ip_data.get("llm", 0) + 1
+    data["global_llm"] = data.get("global_llm", 0) + 1
     _save_quota(data)
 
-def _record_direct_call():
+def _record_direct_call(ip: str):
     data = _read_quota()
-    data["direct_count"] = data.get("direct_count", 0) + 1
+    ips = data.setdefault("ips", {})
+    ip_data = ips.setdefault(ip, {"llm": 0, "direct": 0})
+    ip_data["direct"] = ip_data.get("direct", 0) + 1
+    data["global_direct"] = data.get("global_direct", 0) + 1
     _save_quota(data)
 
 # ── Auth middleware ──
@@ -244,9 +260,12 @@ def build_kb_context(kb_entry: dict) -> str:
 # ── API Routes ────────────────────────────────────────
 
 @app.get("/health")
-def health():
+def health(request: Request):
+    ip = request.client.host if request.client else "unknown"
     kb = load_all()
     quota = _read_quota()
+    # Get this IP's usage
+    ip_data = quota.get("ips", {}).get(ip, {"llm": 0, "direct": 0})
     return {
         "status": "ok",
         "kb_count": len(kb),
@@ -254,10 +273,13 @@ def health():
         "auth_required": bool(AIOPS_API_KEY),
         "rate_limit": RATE_LIMIT_PER_MIN,
         "quota": {
-            "llm_today": quota["llm_count"],
-            "llm_limit": DAILY_LLM_LIMIT,
-            "direct_today": quota["direct_count"],
-            "remaining": DAILY_LLM_LIMIT - quota["llm_count"],
+            "my_ip": ip,
+            "my_llm_today": ip_data.get("llm", 0),
+            "my_llm_limit": LLM_PER_IP_DAILY,
+            "my_direct_today": ip_data.get("direct", 0),
+            "global_llm_today": quota["global_llm"],
+            "global_llm_limit": LLM_GLOBAL_DAILY,
+            "remaining": LLM_PER_IP_DAILY - ip_data.get("llm", 0),
         }
     }
 
@@ -328,7 +350,7 @@ def add_kb_entry(req: KBEntryRequest):
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)
-def analyze(req: AnalyzeRequest):
+def analyze(req: AnalyzeRequest, request: Request = None):
     """Analyze with confidence routing + quota tracking.
 
     Routing:
@@ -336,6 +358,9 @@ def analyze(req: AnalyzeRequest):
       score >= 0.4              → CONTEXT (KB + LLM)
       score < 0.4               → LLM_ONLY
     """
+    # Get client IP for per-IP quota tracking
+    client_ip = request.client.host if (request and request.client) else "unknown"
+
     # 1. Weighted matching
     matches = quick_match_weighted(req.incident, min_score=0.0)
     top_match = matches[0] if matches else None
@@ -349,16 +374,17 @@ def analyze(req: AnalyzeRequest):
         route = "context"
 
     quota = _read_quota()
+    ip_data = quota.get("ips", {}).get(client_ip, {"llm": 0, "direct": 0})
 
     # 2. DIRECT route (no LLM call)
     if route == "direct" and top_match and not req.force_llm:
         kb_entry = get_entry(top_match["kb_id"])
-        _record_direct_call()
+        _record_direct_call(client_ip)
         return AnalyzeResponse(
             success=True,
             confidence_route="direct",
             confidence_score=score,
-            quota_remaining=DAILY_LLM_LIMIT - quota["llm_count"],
+            quota_remaining=LLM_PER_IP_DAILY - ip_data.get("llm", 0),
             kb_direct_answer=kb_entry,
             quick_matches=matches[:5],
             analysis={
@@ -387,16 +413,17 @@ def analyze(req: AnalyzeRequest):
             raw=json.dumps(kb_entry, ensure_ascii=False, indent=2),
         )
 
-    # Check LLM quota before proceeding
-    llm_allowed, llm_remaining = _check_llm_quota()
+    # Check LLM quota before proceeding (per-IP + global)
+    llm_allowed, ip_remaining, global_remaining = _check_llm_quota(client_ip)
     if not llm_allowed:
+        reason = "你的今日 LLM 额度已用完" if ip_remaining == 0 else "全局 LLM 额度已用完"
         return AnalyzeResponse(
             success=False,
             confidence_route="quota_exceeded",
             confidence_score=score,
             quota_remaining=0,
             quick_matches=matches[:5],
-            analysis={"error": f"Daily LLM quota exhausted ({DAILY_LLM_LIMIT}/day). Try again tomorrow or increase AIOPS_DAILY_LLM_LIMIT."},
+            analysis={"error": f"{reason}（每 IP 每天 {LLM_PER_IP_DAILY} 次，全局每天 {LLM_GLOBAL_DAILY} 次）"},
             raw="",
         )
 
@@ -419,14 +446,14 @@ def analyze(req: AnalyzeRequest):
     raw_response = call_llm(
         messages, model=req.model, provider=req.provider, api_key=req.api_key
     )
-    _record_llm_call()
+    _record_llm_call(client_ip)
 
     parsed = parse_llm_response(raw_response)
     return AnalyzeResponse(
         success=True,
         confidence_route=route,
         confidence_score=score,
-        quota_remaining=llm_remaining - 1,
+        quota_remaining=ip_remaining - 1,
         quick_matches=matches[:5],
         analysis=parsed,
         raw=raw_response
@@ -452,5 +479,5 @@ if __name__ == "__main__":
     else:
         print("⚠️  API Key auth: DISABLED (set AIOPS_API_KEY to enable)")
     print(f"⏱️  Rate limit: {RATE_LIMIT_PER_MIN} req/min per IP")
-    print(f"💰 Daily LLM limit: {DAILY_LLM_LIMIT} calls/day")
+    print(f"💰 Per-IP LLM quota: {LLM_PER_IP_DAILY}/day | Global cap: {LLM_GLOBAL_DAILY}/day")
     uvicorn.run(app, host="0.0.0.0", port=port)
