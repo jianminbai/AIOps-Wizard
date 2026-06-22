@@ -136,9 +136,10 @@ def _record_direct_call(ip: str):
 # ── Auth middleware ──
 async def verify_request(request: Request):
     """Middleware: check API key, rate limit, return 429/401 if violated."""
-    # Skip auth for health check and frontend
+    # Skip auth for health check, frontend, and CORS preflight
     path = request.url.path
-    if path in ("/health", "/") or path.startswith("/static"):
+    method = request.method
+    if path in ("/health", "/") or path.startswith("/static") or method == "OPTIONS":
         return
 
     # API Key check (if configured)
