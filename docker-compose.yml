@@ -8,4 +8,8 @@ services:
       - "8766:8766"
     environment:
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - AIOPS_API_KEY=${AIOPS_API_KEY}
+      - AIOPS_RATE_LIMIT=${AIOPS_RATE_LIMIT:-5}
+      - AIOPS_LLM_PER_IP_DAILY=${AIOPS_LLM_PER_IP_DAILY:-30}
+      - AIOPS_LLM_GLOBAL_DAILY=${AIOPS_LLM_GLOBAL_DAILY:-500}
     restart: unless-stopped
