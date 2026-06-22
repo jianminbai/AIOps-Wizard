@@ -3,7 +3,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Install dependencies
-RUN pip install --no-cache-dir fastapi uvicorn openai pydantic httpx
+RUN pip install --no-cache-dir fastapi uvicorn openai pydantic httpx pyyaml
 
 # Copy all project files
 COPY . .
