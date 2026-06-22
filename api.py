@@ -1,22 +1,28 @@
 """
 AI Ops Troubleshooting Assistant — FastAPI Backend
 
-Enterprise-grade version with YAML knowledge base, confidence-based routing,
-and KB CRUD management.
+Enterprise-grade version with:
+  - YAML knowledge base + confidence-based routing
+  - API Key authentication
+  - Per-IP rate limiting
+  - Daily LLM call quota (save token cost)
 
-Start with:
-  cd /opt/data/.hermes/scripts/ops-assistant
-  pip install fastapi uvicorn openai pyyaml httpx 2>/dev/null
-  python api.py
-
-Knowledge base files: kb/*.yaml (edit directly to add enterprise knowledge)
+Env vars:
+  AIOPS_API_KEY          If set, all requests must include X-API-Key header
+  AIOPS_RATE_LIMIT       Max requests per minute per IP (default: 20)
+  AIOPS_DAILY_LLM_LIMIT  Max LLM calls per day (default: 200)
+  AIOPS_DIRECT_THRESHOLD Confidence threshold for direct KB answer (default: 0.7)
 """
 import os
 import sys
 import json
+import time
+import uuid
 import subprocess
 from pathlib import Path
 from typing import Optional
+from datetime import date, datetime
+from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).parent))
 from engine import (
@@ -28,9 +34,9 @@ from kb_loader import (
 )
 
 try:
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import HTMLResponse
+    from fastapi.responses import HTMLResponse, JSONResponse
     from pydantic import BaseModel
     import uvicorn
 except ImportError:
@@ -52,6 +58,108 @@ app.add_middleware(
 )
 
 
+# ══════════════════════════════════════════════════════════════════════
+#  Security: API Key Auth + Rate Limit + Daily Quota
+# ══════════════════════════════════════════════════════════════════════
+
+AIOPS_API_KEY = os.environ.get("AIOPS_API_KEY", "").strip()
+RATE_LIMIT_PER_MIN = int(os.environ.get("AIOPS_RATE_LIMIT", "20"))
+DAILY_LLM_LIMIT = int(os.environ.get("AIOPS_DAILY_LLM_LIMIT", "200"))
+DIRECT_THRESHOLD = float(os.environ.get("AIOPS_DIRECT_THRESHOLD", "0.7"))
+
+# ── Rate limiter (in-memory) ──
+_rate_store: dict[str, list[float]] = defaultdict(list)
+
+def _check_rate_limit(ip: str) -> tuple[bool, int]:
+    """Returns (allowed, remaining). Cleanup stale entries every check."""
+    now = time.time()
+    window = 60.0  # 1 minute
+    # Clean old entries
+    _rate_store[ip] = [t for t in _rate_store[ip] if now - t < window]
+    count = len(_rate_store[ip])
+    if count >= RATE_LIMIT_PER_MIN:
+        return False, 0
+    _rate_store[ip].append(now)
+    return True, RATE_LIMIT_PER_MIN - count - 1
+
+# ── Daily LLM counter (persisted to file) ──
+_QUOTA_FILE = Path(__file__).parent / ".llm_quota.json"
+
+def _get_today() -> str:
+    return date.today().isoformat()
+
+def _read_quota() -> dict:
+    try:
+        data = json.loads(_QUOTA_FILE.read_text())
+        if data.get("date") == _get_today():
+            return data
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        pass
+    return {"date": _get_today(), "llm_count": 0, "direct_count": 0}
+
+def _save_quota(data: dict):
+    _QUOTA_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+def _check_llm_quota() -> tuple[bool, int]:
+    """Returns (allowed, remaining_today)."""
+    data = _read_quota()
+    if data["llm_count"] >= DAILY_LLM_LIMIT:
+        return False, 0
+    return True, DAILY_LLM_LIMIT - data["llm_count"]
+
+def _record_llm_call():
+    data = _read_quota()
+    data["llm_count"] = data.get("llm_count", 0) + 1
+    _save_quota(data)
+
+def _record_direct_call():
+    data = _read_quota()
+    data["direct_count"] = data.get("direct_count", 0) + 1
+    _save_quota(data)
+
+# ── Auth middleware ──
+async def verify_request(request: Request):
+    """Middleware: check API key, rate limit, return 429/401 if violated."""
+    # Skip auth for health check and frontend
+    path = request.url.path
+    if path in ("/health", "/") or path.startswith("/static"):
+        return
+
+    # API Key check (if configured)
+    if AIOPS_API_KEY:
+        client_key = request.headers.get("X-API-Key", "")
+        # Also allow query parameter: ?api_key=xxx
+        query_key = request.query_params.get("api_key", "")
+        if client_key != AIOPS_API_KEY and query_key != AIOPS_API_KEY:
+            raise HTTPException(status_code=401, detail="Unauthorized: missing or invalid X-API-Key header")
+
+    # Rate limit check
+    client_ip = request.client.host if request.client else "unknown"
+    allowed, remaining = _check_rate_limit(client_ip)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded: max {RATE_LIMIT_PER_MIN} requests/min per IP"
+        )
+
+# Register middleware
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    try:
+        await verify_request(request)
+    except HTTPException as e:
+        return JSONResponse(
+            status_code=e.status_code,
+            content={"success": False, "error": e.detail}
+        )
+    response = await call_next(request)
+    # Add security headers
+    response.headers["X-RateLimit-Limit"] = str(RATE_LIMIT_PER_MIN)
+    if AIOPS_API_KEY:
+        response.headers["X-Auth-Required"] = "api-key"
+    return response
+
+
 # ── Pydantic Models ──────────────────────────────────
 
 class AnalyzeRequest(BaseModel):
@@ -61,14 +169,15 @@ class AnalyzeRequest(BaseModel):
     model: str = "deepseek-chat"
     provider: str = "deepseek"
     api_key: Optional[str] = None
-    force_llm: bool = False  # skip direct KB answer, always call LLM
+    force_llm: bool = False
 
 
 class AnalyzeResponse(BaseModel):
     success: bool
-    confidence_route: str = ""         # direct / context / llm_only
+    confidence_route: str = ""
     confidence_score: float = 0.0
-    kb_direct_answer: Optional[dict] = None  # direct route: KB entry
+    quota_remaining: int = 0
+    kb_direct_answer: Optional[dict] = None
     quick_matches: list = []
     analysis: dict = {}
     raw: str = ""
@@ -91,9 +200,8 @@ class KBEntryRequest(BaseModel):
 # ── LLM Call ──────────────────────────────────────────
 
 def call_llm(messages: list, model: str, provider: str, api_key: str = None) -> str:
-    """Call LLM API. Falls back to hermes config or env vars."""
+    """Call LLM API. Falls back to env vars."""
     import openai
-
     if api_key:
         key = api_key
     else:
@@ -101,41 +209,34 @@ def call_llm(messages: list, model: str, provider: str, api_key: str = None) -> 
             f"{provider.upper()}_API_KEY",
             os.environ.get("OPENAI_API_KEY", "")
         )
-
     bases = {
         "deepseek": "https://api.deepseek.com/v1",
         "openai": "https://api.openai.com/v1",
         "openrouter": "https://openrouter.ai/api/v1",
     }
     base_url = bases.get(provider, bases["deepseek"])
-
     client = openai.OpenAI(api_key=key, base_url=base_url)
     try:
         resp = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=0.1,
-            max_tokens=2000,
+            model=model, messages=messages,
+            temperature=0.1, max_tokens=2000,
         )
         return resp.choices[0].message.content or ""
     except Exception as e:
         return json.dumps({"error": str(e), "raw_response": str(e)})
 
 
-# ── Confidence-Based Analysis ────────────────────────
-
 def build_kb_context(kb_entry: dict) -> str:
-    """Format a KB entry as LLM context."""
     causes = "\n".join(f"  - {c}" for c in kb_entry.get("common_causes", []))
     checks = "\n".join(f"  $ {c}" for c in kb_entry.get("check_commands", []))
     fixes = "\n".join(f"  $ {f}" for f in kb_entry.get("fix_commands", []))
     return f"""
-## 匹配到的知识库条目: {kb_entry.get('title', '')}
-### 常见原因
+## Matched KB: {kb_entry.get('title', '')}
+### Common Causes
 {causes}
-### 排查命令
+### Check Commands
 {checks}
-### 修复命令
+### Fix Commands
 {fixes}
 """
 
@@ -145,20 +246,30 @@ def build_kb_context(kb_entry: dict) -> str:
 @app.get("/health")
 def health():
     kb = load_all()
-    return {"status": "ok", "kb_count": len(kb), "kb_source": "yaml"}
+    quota = _read_quota()
+    return {
+        "status": "ok",
+        "kb_count": len(kb),
+        "kb_source": "yaml",
+        "auth_required": bool(AIOPS_API_KEY),
+        "rate_limit": RATE_LIMIT_PER_MIN,
+        "quota": {
+            "llm_today": quota["llm_count"],
+            "llm_limit": DAILY_LLM_LIMIT,
+            "direct_today": quota["direct_count"],
+            "remaining": DAILY_LLM_LIMIT - quota["llm_count"],
+        }
+    }
 
 
 @app.get("/kb")
 def list_kb(category: str = None, search: str = None):
-    """List KB entries. Optionally filter by category or search keyword."""
     if search:
         results = search_keyword(search)
     else:
         results = load_all()
-
     if category:
         results = [e for e in results if e.get("category") == category]
-
     return {"entries": [
         {
             "id": k["id"],
@@ -176,7 +287,6 @@ def list_kb(category: str = None, search: str = None):
 
 @app.get("/kb/{kb_id}")
 def get_kb_entry(kb_id: str):
-    """Get full KB entry by ID."""
     entry = get_entry(kb_id)
     if not entry:
         raise HTTPException(status_code=404, detail=f"KB entry {kb_id} not found")
@@ -185,21 +295,12 @@ def get_kb_entry(kb_id: str):
 
 @app.post("/kb")
 def add_kb_entry(req: KBEntryRequest):
-    """Add a new KB entry by appending to the appropriate category YAML file.
-
-    To ensure persistence, this writes to the YAML file on disk.
-    Simple approach: append to resource.yaml by default.
-    User can then move it to the right category file.
-    """
     category_file = Path(__file__).parent / "kb" / f"{req.category}.yaml"
     if not category_file.exists():
         category_file = Path(__file__).parent / "kb" / "resource.yaml"
-
     import yaml
     with open(category_file) as f:
         entries = yaml.safe_load(f) or []
-
-    # Generate new ID
     max_num = 0
     for e in entries:
         eid = e.get("id", "KB000")
@@ -209,61 +310,55 @@ def add_kb_entry(req: KBEntryRequest):
         except ValueError:
             pass
     new_id = f"KB{max_num + 1:03d}"
-
     new_entry = {
-        "id": new_id,
-        "title": req.title,
-        "title_en": req.title_en,
-        "keywords": req.keywords,
-        "category": req.category,
-        "severity": req.severity,
-        "common_causes": req.common_causes,
-        "check_commands": req.check_commands,
-        "fix_commands": req.fix_commands,
-        "tags": req.tags,
-        "source": req.source,
+        "id": new_id, "title": req.title, "title_en": req.title_en,
+        "keywords": req.keywords, "category": req.category,
+        "severity": req.severity, "common_causes": req.common_causes,
+        "check_commands": req.check_commands, "fix_commands": req.fix_commands,
+        "tags": req.tags, "source": req.source,
         "confidence_weight": req.confidence_weight,
     }
-
     entries.append(new_entry)
     with open(category_file, "w") as f:
         yaml.dump(entries, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
-
-    # Reload KB cache
     import kb_loader
     kb_loader._KNOWLEDGE_BASE = None
     kb_loader._INVERTED_INDEX = None
-
     return {"status": "created", "id": new_id, "entry": new_entry}
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)
 def analyze(req: AnalyzeRequest):
-    """Analyze an incident with confidence-based knowledge base routing.
+    """Analyze with confidence routing + quota tracking.
 
-    Routing logic:
-      - confidence >= 0.7 → DIRECT: return KB entry directly (no LLM cost)
-      - confidence >= 0.4 → CONTEXT: KB context + LLM analysis
-      - confidence < 0.4  → LLM_ONLY: pure LLM analysis
+    Routing:
+      score >= DIRECT_THRESHOLD → DIRECT (no LLM, free)
+      score >= 0.4              → CONTEXT (KB + LLM)
+      score < 0.4               → LLM_ONLY
     """
-    # 1. Weighted matching against YAML knowledge base
+    # 1. Weighted matching
     matches = quick_match_weighted(req.incident, min_score=0.0)
     top_match = matches[0] if matches else None
     score = top_match["score"] if top_match else 0.0
     route = route_by_confidence(score) if top_match else "llm_only"
+    # Use configured threshold for direct
+    if route == "direct" and score < DIRECT_THRESHOLD:
+        route = "context"
 
-    # If caller forces LLM, override route
     if req.force_llm and route == "direct":
         route = "context"
 
-    # 2. Route handling
+    quota = _read_quota()
+
+    # 2. DIRECT route (no LLM call)
     if route == "direct" and top_match and not req.force_llm:
-        # DIRECT: Return KB entry directly, no LLM call
         kb_entry = get_entry(top_match["kb_id"])
+        _record_direct_call()
         return AnalyzeResponse(
             success=True,
             confidence_route="direct",
             confidence_score=score,
+            quota_remaining=DAILY_LLM_LIMIT - quota["llm_count"],
             kb_direct_answer=kb_entry,
             quick_matches=matches[:5],
             analysis={
@@ -274,13 +369,13 @@ def analyze(req: AnalyzeRequest):
                         "rank": i + 1,
                         "cause": cause,
                         "probability": "high" if i == 0 else "medium",
-                        "evidence": "匹配知识库条目: " + kb_entry.get("title", ""),
+                        "evidence": "Matched KB: " + kb_entry.get("title", ""),
                         "verify_steps": kb_entry.get("check_commands", []),
                     }
                     for i, cause in enumerate(kb_entry.get("common_causes", []))
                 ],
                 "immediate_actions": [
-                    f"参考 '{kb_entry.get('title', '')}' 排查步骤"
+                    f"Refer to '{kb_entry.get('title', '')}' troubleshooting steps"
                 ],
                 "mitigation_suggestions": kb_entry.get("common_causes", []),
                 "commands": {
@@ -292,17 +387,28 @@ def analyze(req: AnalyzeRequest):
             raw=json.dumps(kb_entry, ensure_ascii=False, indent=2),
         )
 
-    # 3. Build LLM prompt (with or without KB context)
+    # Check LLM quota before proceeding
+    llm_allowed, llm_remaining = _check_llm_quota()
+    if not llm_allowed:
+        return AnalyzeResponse(
+            success=False,
+            confidence_route="quota_exceeded",
+            confidence_score=score,
+            quota_remaining=0,
+            quick_matches=matches[:5],
+            analysis={"error": f"Daily LLM quota exhausted ({DAILY_LLM_LIMIT}/day). Try again tomorrow or increase AIOPS_DAILY_LLM_LIMIT."},
+            raw="",
+        )
+
+    # 3. Build prompt
     user_content = build_user_prompt(req.incident)
     context = build_context(req.metrics, req.logs)
     if context:
         user_content += f"\n\n{context}"
-
     if route == "context" and top_match:
         kb_entry = get_entry(top_match["kb_id"])
         if kb_entry:
-            kb_ctx = build_kb_context(kb_entry)
-            user_content += f"\n\n{kb_ctx}"
+            user_content += f"\n\n{build_kb_context(kb_entry)}"
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -311,19 +417,16 @@ def analyze(req: AnalyzeRequest):
 
     # 4. Call LLM
     raw_response = call_llm(
-        messages,
-        model=req.model,
-        provider=req.provider,
-        api_key=req.api_key
+        messages, model=req.model, provider=req.provider, api_key=req.api_key
     )
+    _record_llm_call()
 
-    # 5. Parse response
     parsed = parse_llm_response(raw_response)
-
     return AnalyzeResponse(
         success=True,
         confidence_route=route,
         confidence_score=score,
+        quota_remaining=llm_remaining - 1,
         quick_matches=matches[:5],
         analysis=parsed,
         raw=raw_response
@@ -334,7 +437,7 @@ def analyze(req: AnalyzeRequest):
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return HTMLResponse(Path(__file__).parent.joinpath("docs/index.html").read_text())
+    return HTMLResponse(Path(__file__).parent.joinpath("index.html").read_text())
 
 
 # ── Main ───────────────────────────────────────────────
@@ -343,5 +446,11 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8766))
     print(f"🚀 AI Ops Assistant (Enterprise) starting on http://0.0.0.0:{port}")
     print(f"📚 Knowledge Base: {len(load_all())} entries via YAML")
-    print(f"🔍 Routing: direct(>=0.7) | context(>=0.4) | llm_only(<0.4)")
+    print(f"🔍 Routing: direct(>={DIRECT_THRESHOLD}) | context(>=0.4) | llm_only(<0.4)")
+    if AIOPS_API_KEY:
+        print(f"🔑 API Key auth: ENABLED ({AIOPS_API_KEY[:4]}...{AIOPS_API_KEY[-4:]})")
+    else:
+        print("⚠️  API Key auth: DISABLED (set AIOPS_API_KEY to enable)")
+    print(f"⏱️  Rate limit: {RATE_LIMIT_PER_MIN} req/min per IP")
+    print(f"💰 Daily LLM limit: {DAILY_LLM_LIMIT} calls/day")
     uvicorn.run(app, host="0.0.0.0", port=port)

@@ -157,7 +157,17 @@
         <input id="model" value="deepseek-chat" placeholder="model name">
       </div>
     </div>
-    
+
+    <div class="row">
+      <div>
+        <label>🔑 API Key (if server requires auth)</label>
+        <input id="apiKey" type="password" placeholder="Leave empty if no auth required">
+      </div>
+      <div style="display:flex;align-items:flex-end;">
+        <button class="btn" onclick="saveApiKey()" style="padding: 8px 16px;font-size:13px;">💾 Save Key</button>
+      </div>
+    </div>
+
     <div style="text-align: right; margin-top: 12px;">
       <button id="analyzeBtn" class="btn" onclick="analyze()">🚀 Analyze</button>
     </div>
@@ -210,19 +220,26 @@ function loadExample(n) {
 async function analyze() {
   const incident = document.getElementById('incident').value.trim();
   if (!incident) { alert('Please describe the incident first.'); return; }
-  
+
   const btn = document.getElementById('analyzeBtn');
   btn.disabled = true;
   btn.innerHTML = '<span class="loader"></span> Analyzing...';
-  
+
   document.getElementById('errorSection').style.display = 'none';
   document.getElementById('resultSection').style.display = 'none';
   document.getElementById('quickMatchSection').style.display = 'none';
-  
+
+  // Build headers with API key if saved
+  const headers = { 'Content-Type': 'application/json' };
+  const savedKey = localStorage.getItem('aiops_api_key');
+  if (savedKey) {
+    headers['X-API-Key'] = savedKey;
+  }
+
   try {
     const resp = await fetch(API + '/analyze', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: headers,
       body: JSON.stringify({
         incident: incident,
         model: document.getElementById('model').value.trim(),
@@ -358,6 +375,19 @@ function copyCmd(el) {
     el.style.background = '#00d4aa33';
     setTimeout(() => el.style.background = '', 500);
   });
+}
+// Load saved API key on page load
+document.addEventListener('DOMContentLoaded', function() {
+  const keyInput = document.getElementById('apiKey');
+  if (keyInput) {
+    const saved = localStorage.getItem('aiops_api_key');
+    if (saved) keyInput.value = saved;
+  }
+});
+function saveApiKey() {
+  const val = document.getElementById('apiKey').value.trim();
+  localStorage.setItem('aiops_api_key', val);
+  alert('API key ' + (val ? 'saved!' : 'cleared!'));
 }
 </script>
 </body>
