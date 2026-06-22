@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Ops Troubleshooting Assistant</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { 
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #0f1923; color: #e0e0e0; min-height: 100vh;
+  }
+  .container { max-width: 900px; margin: 0 auto; padding: 20px; }
+  
+  h1 { 
+    font-size: 24px; color: #00d4aa; margin-bottom: 8px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .subtitle { color: #8899aa; font-size: 14px; margin-bottom: 24px; }
+  
+  .card {
+    background: #1a2a3a; border-radius: 12px; padding: 20px;
+    margin-bottom: 16px; border: 1px solid #2a3a4a;
+  }
+  .card-title { font-size: 14px; color: #8899aa; margin-bottom: 12px; font-weight: 600; }
+  
+  textarea, input, select {
+    width: 100%; background: #0f1923; border: 1px solid #2a3a4a;
+    border-radius: 8px; color: #e0e0e0; padding: 12px;
+    font-size: 14px; font-family: 'JetBrains Mono', 'Consolas', monospace;
+  }
+  textarea:focus, input:focus { outline: none; border-color: #00d4aa; }
+  
+  .incident-input { min-height: 140px; resize: vertical; }
+  .extra-input { min-height: 80px; resize: vertical; margin-bottom: 8px; }
+  
+  .row { display: flex; gap: 12px; margin-bottom: 12px; }
+  .row > * { flex: 1; }
+  
+  label { display: block; font-size: 12px; color: #8899aa; margin-bottom: 4px; }
+  
+  .btn {
+    background: #00d4aa; color: #0f1923; border: none;
+    padding: 12px 32px; border-radius: 8px; font-size: 16px;
+    font-weight: 600; cursor: pointer; transition: all 0.2s;
+  }
+  .btn:hover { background: #00e6b8; transform: translateY(-1px); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+  
+  /* Quick Match Tags */
+  .quick-matches { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .tag {
+    background: #2a3a4a; border-radius: 4px; padding: 4px 10px;
+    font-size: 12px; color: #8899aa; border: 1px solid #3a4a5a;
+  }
+  .tag.match { border-color: #00d4aa; color: #00d4aa; }
+  
+  /* Result */
+  .result-section { margin-bottom: 12px; }
+  .result-section h3 { 
+    color: #00d4aa; font-size: 14px; margin-bottom: 8px;
+    padding-bottom: 4px; border-bottom: 1px solid #2a3a4a;
+  }
+  .hypothesis {
+    background: #0f1923; border-radius: 8px; padding: 12px;
+    margin-bottom: 8px; border-left: 3px solid #00d4aa;
+  }
+  .hypothesis .rank { color: #ffd700; font-weight: bold; font-size: 13px; }
+  .hypothesis .cause { color: #e0e0e0; margin: 4px 0; }
+  .hypothesis .prob-high { color: #ff4444; }
+  .hypothesis .prob-medium { color: #ffaa00; }
+  .hypothesis .prob-low { color: #66bb6a; }
+  .hypothesis .cmd {
+    background: #1a2a3a; padding: 4px 8px; border-radius: 4px;
+    font-family: monospace; font-size: 12px; color: #88ccff;
+    display: inline-block; margin: 2px; cursor: pointer;
+  }
+  .hypothesis .cmd:hover { background: #2a3a4a; }
+  
+  .classification {
+    display: inline-block; padding: 4px 12px; border-radius: 4px;
+    font-size: 13px; font-weight: 600; margin-bottom: 8px;
+  }
+  .cls-resource { background: #ff444422; color: #ff4444; border: 1px solid #ff4444; }
+  .cls-application { background: #4488ff22; color: #4488ff; border: 1px solid #4488ff; }
+  .cls-dependency { background: #ffaa0022; color: #ffaa00; border: 1px solid #ffaa00; }
+  .cls-external { background: #aa66ff22; color: #aa66ff; border: 1px solid #aa66ff; }
+  .cls-change { background: #66bb6a22; color: #66bb6a; border: 1px solid #66bb6a; }
+  
+  .severity {
+    display: inline-block; padding: 4px 12px; border-radius: 4px;
+    font-size: 13px; font-weight: 600; margin-left: 8px;
+  }
+  .sev-true { background: #ff444422; color: #ff4444; }
+  .sev-false { background: #66bb6a22; color: #66bb6a; }
+  .sev-needs { background: #ffaa0022; color: #ffaa00; }
+  
+  .action-list { margin: 4px 0; padding-left: 20px; }
+  .action-list li { margin-bottom: 4px; font-size: 14px; }
+  
+  .raw-toggle {
+    color: #8899aa; cursor: pointer; font-size: 12px; text-decoration: underline;
+    margin-top: 8px; display: inline-block;
+  }
+  .raw-json { display: none; }
+  .raw-json.visible { display: block; }
+  
+  .loader {
+    display: inline-block; width: 16px; height: 16px;
+    border: 2px solid #2a3a4a; border-top: 2px solid #00d4aa;
+    border-radius: 50%; animation: spin 1s linear infinite;
+    margin-right: 8px; vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  
+  .error { color: #ff4444; background: #ff444422; padding: 12px; border-radius: 8px; }
+  
+  .example-badge {
+    display: inline-block; background: #2a3a4a; border-radius: 4px;
+    padding: 3px 8px; font-size: 11px; color: #8899aa; margin-right: 4px;
+    margin-top: 4px; cursor: pointer; border: 1px solid #3a4a5a;
+  }
+  .example-badge:hover { border-color: #00d4aa; color: #00d4aa; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🔧 AI Ops Troubleshooting Assistant</h1>
+  <p class="subtitle">Describe an incident → Get structured root cause analysis</p>
+  
+  <!-- Preset examples -->
+  <div class="card">
+    <div class="card-title">📋 Quick Examples</div>
+    <div>
+      <span class="example-badge" onclick="loadExample(1)">Pod CrashLoopBackOff</span>
+      <span class="example-badge" onclick="loadExample(2)">CPU 100% + 延迟升高</span>
+      <span class="example-badge" onclick="loadExample(3)">数据库连接池耗尽</span>
+      <span class="example-badge" onclick="loadExample(4)">Redis timeout + 慢查询</span>
+    </div>
+  </div>
+  
+  <!-- Input -->
+  <div class="card">
+    <div class="card-title">📝 Incident Description</div>
+    <textarea id="incident" class="incident-input" placeholder="Describe the incident, e.g.:&#10;order-service P95 latency from 200ms to 3s&#10;CPU at 95%, memory at 80%&#10;connection timeout errors increasing in logs&#10;..."></textarea>
+    
+    <div class="row">
+      <div>
+        <label>Provider</label>
+        <select id="provider">
+          <option value="deepseek">DeepSeek</option>
+          <option value="openai">OpenAI</option>
+        </select>
+      </div>
+      <div>
+        <label>Model</label>
+        <input id="model" value="deepseek-chat" placeholder="model name">
+      </div>
+    </div>
+    
+    <div style="text-align: right; margin-top: 12px;">
+      <button id="analyzeBtn" class="btn" onclick="analyze()">🚀 Analyze</button>
+    </div>
+  </div>
+  
+  <!-- Quick Match Results -->
+  <div id="quickMatchSection" style="display:none;">
+    <div class="card">
+      <div class="card-title">🔍 Quick Pattern Match</div>
+      <div id="quickMatches" class="quick-matches"></div>
+    </div>
+  </div>
+  
+  <!-- Analysis Results -->
+  <div id="resultSection" style="display:none;">
+    <div class="card">
+      <div id="resultContent"></div>
+      <span class="raw-toggle" onclick="toggleRaw()">📄 Show raw response</span>
+      <pre id="rawJson" class="raw-json"></pre>
+    </div>
+  </div>
+  
+  <!-- Error -->
+  <div id="errorSection" style="display:none;">
+    <div class="card error" id="errorContent"></div>
+  </div>
+</div>
+
+<script>
+const API = '';
+const examples = [
+  {
+    text: `Incident: order-service Pod CrashLoopBackOff\nService: order-service\nSeverity: P1\n\nPod status: CrashLoopBackOff, restarted 5 times in 10 minutes\nLogs: "java.lang.OutOfMemoryError: Java heap space" at startup\nResources: memory limit 512Mi, CPU limit 500m`
+  },
+  {
+    text: `Incident: API Gateway P95 latency from 200ms to 3s\nService: api-gateway\nSeverity: P0\n\nMetrics: CPU 98%, memory 75%\nLogs: "connection timeout" for downstream services\nRecent changes: new deployment 30 minutes ago\nTrace: 80% of time spent waiting for order-service response`
+  },
+  {
+    text: `Incident: Order creation failing with database timeout\nService: order-service\nSeverity: P2\n\nError: "HikariPool-1 - Connection is not available, request timed out after 30000ms"\nMetrics: active connections 50/50 (pool full), CPU 30%\nLogs: "could not execute statement; SQL: INSERT INTO orders..."`
+  },
+  {
+    text: `Incident: Cache read timeout spikes\nService: product-service\nSeverity: P2\n\nError: "redis.clients.jedis.exceptions.JedisConnectionException: Unexpected end of stream"\nMetrics: Redis CPU 90%, latency P99 500ms\nSigns: some cache keys are large JSON blobs (100KB+)`
+  }
+];
+
+function loadExample(n) {
+  document.getElementById('incident').value = examples[n-1].text;
+}
+
+async function analyze() {
+  const incident = document.getElementById('incident').value.trim();
+  if (!incident) { alert('Please describe the incident first.'); return; }
+  
+  const btn = document.getElementById('analyzeBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="loader"></span> Analyzing...';
+  
+  document.getElementById('errorSection').style.display = 'none';
+  document.getElementById('resultSection').style.display = 'none';
+  document.getElementById('quickMatchSection').style.display = 'none';
+  
+  try {
+    const resp = await fetch(API + '/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        incident: incident,
+        model: document.getElementById('model').value.trim(),
+        provider: document.getElementById('provider').value
+      })
+    });
+    
+    const data = await resp.json();
+    
+    // Quick matches
+    if (data.quick_matches && data.quick_matches.length > 0) {
+      document.getElementById('quickMatchSection').style.display = 'block';
+      document.getElementById('quickMatches').innerHTML = 
+        data.quick_matches.map(m => 
+          `<span class="tag match">🔍 ${m.title}</span>`
+        ).join('');
+    }
+    
+    // Analysis
+    const analysis = data.analysis;
+    if (analysis && !analysis.parse_error) {
+      renderAnalysis(analysis);
+    } else {
+      renderError(data.raw || 'No analysis returned');
+    }
+    
+    // Raw JSON
+    document.getElementById('rawJson').textContent = JSON.stringify(data, null, 2);
+    
+  } catch (err) {
+    renderError('Network error: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '🚀 Analyze';
+  }
+}
+
+function renderAnalysis(a) {
+  const div = document.getElementById('resultContent');
+  let html = '';
+  
+  // Classification
+  if (a.classification) {
+    const cls = a.classification.toLowerCase();
+    const clsClass = {
+      'resource': 'cls-resource', '应用': 'cls-application',
+      'dependency': 'cls-dependency', '外部': 'cls-external',
+      'change': 'cls-change', '变更': 'cls-change'
+    }[cls] || 'cls-resource';
+    
+    html += `<span class="classification ${clsClass}">📌 ${a.classification}</span>`;
+  }
+  
+  // Severity
+  if (a.severity_assessment) {
+    const sev = a.severity_assessment;
+    const sevClass = sev.includes('true') ? 'sev-true' : 
+                     sev.includes('false') ? 'sev-false' : 'sev-needs';
+    html += `<span class="severity ${sevClass}">⚠️ ${sev}</span>`;
+  }
+  
+  // Root cause hypotheses
+  if (a.root_cause_hypotheses && a.root_cause_hypotheses.length > 0) {
+    html += `<div class="result-section"><h3>🔎 Root Cause Hypotheses</h3>`;
+    a.root_cause_hypotheses.forEach(h => {
+      const probClass = h.probability === 'high' ? 'prob-high' : 
+                        h.probability === 'medium' ? 'prob-medium' : 'prob-low';
+      html += `<div class="hypothesis">
+        <div><span class="rank">#${h.rank}</span> 
+          <span class="${probClass}">[${h.probability}]</span>
+        </div>
+        <div class="cause">${h.cause || h.cause_description || ''}</div>
+        <div style="font-size:12px;color:#8899aa;margin:4px 0;">${h.evidence || ''}</div>`;
+      
+      if (h.verify_steps && h.verify_steps.length > 0) {
+        html += `<div style="margin-top:6px;">
+          <span style="font-size:11px;color:#8899aa;">Verify:</span>`;
+        h.verify_steps.forEach(cmd => {
+          html += `<span class="cmd" onclick="copyCmd(this)">${cmd}</span>`;
+        });
+        html += `</div>`;
+      }
+      html += `</div>`;
+    });
+    html += `</div>`;
+  }
+  
+  // Immediate actions
+  if (a.immediate_actions && a.immediate_actions.length > 0) {
+    html += `<div class="result-section"><h3>⚡ Immediate Actions</h3><ul class="action-list">`;
+    a.immediate_actions.forEach(a => html += `<li>${a}</li>`);
+    html += `</ul></div>`;
+  }
+  
+  // Mitigation
+  if (a.mitigation_suggestions && a.mitigation_suggestions.length > 0) {
+    html += `<div class="result-section"><h3>🛡️ Mitigation</h3><ul class="action-list">`;
+    a.mitigation_suggestions.forEach(m => html += `<li>${m}</li>`);
+    html += `</ul></div>`;
+  }
+  
+  // Commands
+  if (a.commands) {
+    for (const [type, cmds] of Object.entries(a.commands)) {
+      if (cmds && cmds.length > 0) {
+        html += `<div class="result-section"><h3>💻 ${type === 'check' ? 'Check' : type === 'fix' ? 'Fix' : type} Commands</h3>`;
+        cmds.forEach(c => html += `<div style="margin:4px 0;"><code style="background:#0f1923;padding:4px 8px;border-radius:4px;font-size:13px;color:#88ccff;">${c}</code></div>`);
+        html += `</div>`;
+      }
+    }
+  }
+  
+  if (!html) {
+    html = `<pre style="color:#8899aa;">${JSON.stringify(a, null, 2)}</pre>`;
+  }
+  
+  div.innerHTML = html;
+  document.getElementById('resultSection').style.display = 'block';
+}
+
+function renderError(msg) {
+  document.getElementById('errorContent').textContent = '❌ ' + msg;
+  document.getElementById('errorSection').style.display = 'block';
+}
+
+function toggleRaw() {
+  document.getElementById('rawJson').classList.toggle('visible');
+}
+
+function copyCmd(el) {
+  const text = el.textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    el.style.background = '#00d4aa33';
+    setTimeout(() => el.style.background = '', 500);
+  });
+}
+</script>
+</body>
+</html>
