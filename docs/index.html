@@ -139,9 +139,9 @@
     </div>
   </div>
   
-  <!-- API Endpoint Configuration -->
+  <!-- API Endpoint + API Key Configuration -->
   <div class="card">
-    <div class="card-title">⚙️ API Endpoint</div>
+    <div class="card-title">⚙️ Configuration</div>
     <div class="row">
       <div style="flex: 3;">
         <label>Backend API URL</label>
@@ -151,8 +151,17 @@
         <button class="btn" onclick="saveApiEndpoint()" style="padding: 12px 16px; font-size: 14px; width: 100%;">💾 Save</button>
       </div>
     </div>
+    <div class="row" style="margin-top: 8px;">
+      <div style="flex: 3;">
+        <label>API Key <span style="color:#ffaa00;">(required if backend has auth)</span></label>
+        <input id="apiKey" type="password" placeholder="Enter your API Key">
+      </div>
+      <div style="flex: 1; display: flex; align-items: flex-end;">
+        <button class="btn" onclick="saveApiKey()" style="padding: 12px 16px; font-size: 14px; width: 100%; background:#2a3a4a; color:#e0e0e0;">🔑 Save Key</button>
+      </div>
+    </div>
     <div style="font-size: 12px; color: #8899aa; margin-top: 6px;">
-      💡 You can also use URL parameter: <code>?api=https://your-api.com</code>
+      💡 URL parameter: <code>?api=https://your-api.com&amp;key=your-api-key</code>
     </div>
   </div>
 
@@ -214,17 +223,37 @@ const API = apiFromUrl || apiFromStorage || DEFAULT_API;
 if (apiFromUrl) {
   localStorage.setItem('aiops_api_endpoint', apiFromUrl);
 }
-// Populate the UI input field on load
+
+// API Key resolution: URL param > localStorage
+const keyFromUrl = urlParams.get('key');
+const keyFromStorage = localStorage.getItem('aiops_api_key');
+const API_KEY = keyFromUrl || keyFromStorage || '';
+if (keyFromUrl) {
+  localStorage.setItem('aiops_api_key', keyFromUrl);
+}
+
+// Populate the UI input fields on load
 document.addEventListener('DOMContentLoaded', function() {
-  const input = document.getElementById('apiEndpoint');
-  if (input) {
-    input.value = localStorage.getItem('aiops_api_endpoint') || DEFAULT_API;
+  const endpointInput = document.getElementById('apiEndpoint');
+  if (endpointInput) {
+    endpointInput.value = localStorage.getItem('aiops_api_endpoint') || DEFAULT_API;
+  }
+  const keyInput = document.getElementById('apiKey');
+  if (keyInput && API_KEY) {
+    keyInput.value = API_KEY;
   }
 });
 function saveApiEndpoint() {
   const val = document.getElementById('apiEndpoint').value.trim();
   localStorage.setItem('aiops_api_endpoint', val);
   alert('API endpoint saved! ' + (val ? 'Using: ' + val : 'Using same-origin (no prefix)'));
+  // Reload to apply
+  location.reload();
+}
+function saveApiKey() {
+  const val = document.getElementById('apiKey').value.trim();
+  localStorage.setItem('aiops_api_key', val);
+  alert('API Key saved!');
   // Reload to apply
   location.reload();
 }
@@ -260,9 +289,13 @@ async function analyze() {
   document.getElementById('quickMatchSection').style.display = 'none';
   
   try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (API_KEY) {
+      headers['X-API-Key'] = API_KEY;
+    }
     const resp = await fetch(API + '/analyze', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: headers,
       body: JSON.stringify({
         incident: incident,
         model: document.getElementById('model').value.trim(),
