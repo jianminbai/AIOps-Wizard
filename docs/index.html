@@ -145,7 +145,7 @@
     <div class="row">
       <div style="flex: 3;">
         <label>Backend API URL</label>
-        <input id="apiEndpoint" placeholder="Leave empty for same-origin, or enter https://your-api.com">
+        <input id="apiEndpoint" placeholder="Default: https://avon-claimed-pattern-forgot.trycloudflare.com">
       </div>
       <div style="flex: 1; display: flex; align-items: flex-end;">
         <button class="btn" onclick="saveApiEndpoint()" style="padding: 12px 16px; font-size: 14px; width: 100%;">💾 Save</button>
@@ -204,11 +204,12 @@
 </div>
 
 <script>
-// API endpoint resolution: URL param > localStorage > default (same-origin)
+// API endpoint resolution: URL param > localStorage > default (tunnel URL)
+const DEFAULT_API = 'https://avon-claimed-pattern-forgot.trycloudflare.com';
 const urlParams = new URLSearchParams(window.location.search);
 const apiFromUrl = urlParams.get('api');
 const apiFromStorage = localStorage.getItem('aiops_api_endpoint');
-const API = apiFromUrl || apiFromStorage || '';
+const API = apiFromUrl || apiFromStorage || DEFAULT_API;
 // If from URL param, save to localStorage for persistence
 if (apiFromUrl) {
   localStorage.setItem('aiops_api_endpoint', apiFromUrl);
@@ -217,7 +218,7 @@ if (apiFromUrl) {
 document.addEventListener('DOMContentLoaded', function() {
   const input = document.getElementById('apiEndpoint');
   if (input) {
-    input.value = localStorage.getItem('aiops_api_endpoint') || '';
+    input.value = localStorage.getItem('aiops_api_endpoint') || DEFAULT_API;
   }
 });
 function saveApiEndpoint() {
