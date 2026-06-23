@@ -255,10 +255,12 @@
 <script>
 const DEFAULT_API = (() => {
   const u = new URLSearchParams(window.location.search).get('api');
-  return u || localStorage.getItem('aiops_api_endpoint') || '';
+  return u || localStorage.getItem('aiops_api_endpoint') || 'https://avon-claimed-pattern-forgot.trycloudflare.com';
 })();
-if (DEFAULT_API) localStorage.setItem('aiops_api_endpoint', DEFAULT_API);
-const API = DEFAULT_API || '';
+if (DEFAULT_API && !localStorage.getItem('aiops_api_endpoint') && !new URLSearchParams(window.location.search).get('api')) {
+  localStorage.setItem('aiops_api_endpoint', DEFAULT_API);
+}
+const API = DEFAULT_API;
 
 document.addEventListener('DOMContentLoaded', function() {
   const ep = document.getElementById('apiEndpoint');
