@@ -32,6 +32,8 @@ from kb_loader import (
     load_all, quick_match_weighted, route_by_confidence,
     get_entry, search_keyword
 )
+from context_collector import collect_context, summarize_package
+from rca_agent import RCA_SYSTEM_PROMPT, build_rca_prompt
 
 try:
     from fastapi import FastAPI, HTTPException, Request
@@ -212,6 +214,16 @@ class KBEntryRequest(BaseModel):
     tags: Optional[list[str]] = []
     source: Optional[str] = "manual"
     confidence_weight: Optional[float] = 1.0
+
+
+class RCARequest(BaseModel):
+    """Root Cause Analysis request — alert + optional service + namespace."""
+    alert: str
+    service: str = ""
+    namespace: str = "default"
+    model: str = "deepseek-chat"
+    provider: str = "deepseek"
+    api_key: Optional[str] = None
 
 
 # ── LLM Call ──────────────────────────────────────────
@@ -459,6 +471,71 @@ def analyze(req: AnalyzeRequest, request: Request = None):
         analysis=parsed,
         raw=raw_response
     )
+
+
+# ── RCA Endpoint ───────────────────────────────────────
+
+@app.post("/rca")
+def root_cause_analysis(req: RCARequest, request: Request):
+    """Root Cause Analysis pipeline: collect context → LLM → structured report."""
+    client_ip = request.client.host if request.client else "unknown"
+
+    # 1. Collect context from all sources
+    pkg = collect_context(
+        alert=req.alert,
+        service=req.service,
+        namespace=req.namespace,
+    )
+
+    # 2. Build context summary
+    context_summary = summarize_package(pkg)
+
+    # 3. Build RCA prompt
+    rca_prompt = build_rca_prompt(req.alert, context_summary, req.service)
+    messages = [
+        {"role": "system", "content": RCA_SYSTEM_PROMPT},
+        {"role": "user", "content": rca_prompt},
+    ]
+
+    # 4. Call LLM
+    raw = call_llm(messages, model=req.model, provider=req.provider, api_key=req.api_key)
+
+    # 5. Parse JSON from LLM response
+    report = {}
+    try:
+        # Extract JSON from the response (handle markdown code blocks)
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            # Remove markdown code fences
+            lines = cleaned.split("\n")
+            start = 0
+            for i, line in enumerate(lines):
+                if line.startswith("```"):
+                    start = i + 1
+                    break
+            end = len(lines)
+            for i in range(len(lines) - 1, start, -1):
+                if lines[i].startswith("```"):
+                    end = i
+                    break
+            cleaned = "\n".join(lines[start:end])
+        report = json.loads(cleaned)
+    except (json.JSONDecodeError, Exception):
+        report = {"raw_llm_output": raw[:3000]}
+
+    return {
+        "success": True,
+        "alert": req.alert,
+        "service": req.service or "unknown",
+        "report": report,
+        "context_summary": {
+            "kubernetes": pkg.get("kubernetes", {}).get("data_source", "N/A"),
+            "elasticsearch": pkg.get("elasticsearch", {}).get("data_source", "N/A"),
+            "prometheus": pkg.get("prometheus", {}).get("data_source", "N/A"),
+            "otel": pkg.get("otel", {}).get("data_source", "N/A"),
+        },
+        "raw": raw[:2000],
+    }
 
 
 # ── Frontend ──────────────────────────────────────────

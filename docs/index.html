@@ -3,42 +3,50 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Ops Troubleshooting Assistant</title>
+<title>AI Ops RCA — Root Cause Analysis</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { 
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background: #0f1923; color: #e0e0e0; min-height: 100vh;
   }
-  .container { max-width: 900px; margin: 0 auto; padding: 20px; }
-  
+  .container { max-width: 960px; margin: 0 auto; padding: 20px; }
+
   h1 { 
-    font-size: 24px; color: #00d4aa; margin-bottom: 8px;
+    font-size: 24px; color: #00d4aa; margin-bottom: 4px;
     display: flex; align-items: center; gap: 10px;
   }
-  .subtitle { color: #8899aa; font-size: 14px; margin-bottom: 24px; }
-  
+  .subtitle { color: #8899aa; font-size: 14px; margin-bottom: 16px; }
+
+  /* Mode Tabs */
+  .mode-tabs { display: flex; gap: 0; margin-bottom: 16px; }
+  .mode-tab {
+    padding: 10px 24px; cursor: pointer; border-radius: 8px 8px 0 0;
+    font-size: 14px; font-weight: 600; transition: all 0.2s;
+    background: #1a2a3a; color: #8899aa; border: 1px solid #2a3a4a; border-bottom: none;
+  }
+  .mode-tab.active { background: #00d4aa22; color: #00d4aa; border-color: #00d4aa; }
+  .mode-tab:hover { background: #2a3a4a; }
+
   .card {
     background: #1a2a3a; border-radius: 12px; padding: 20px;
     margin-bottom: 16px; border: 1px solid #2a3a4a;
   }
   .card-title { font-size: 14px; color: #8899aa; margin-bottom: 12px; font-weight: 600; }
-  
+
   textarea, input, select {
     width: 100%; background: #0f1923; border: 1px solid #2a3a4a;
     border-radius: 8px; color: #e0e0e0; padding: 12px;
     font-size: 14px; font-family: 'JetBrains Mono', 'Consolas', monospace;
   }
   textarea:focus, input:focus { outline: none; border-color: #00d4aa; }
-  
-  .incident-input { min-height: 140px; resize: vertical; }
-  .extra-input { min-height: 80px; resize: vertical; margin-bottom: 8px; }
-  
+
+  .incident-input { min-height: 100px; resize: vertical; }
+
   .row { display: flex; gap: 12px; margin-bottom: 12px; }
   .row > * { flex: 1; }
-  
   label { display: block; font-size: 12px; color: #8899aa; margin-bottom: 4px; }
-  
+
   .btn {
     background: #00d4aa; color: #0f1923; border: none;
     padding: 12px 32px; border-radius: 8px; font-size: 16px;
@@ -46,65 +54,9 @@
   }
   .btn:hover { background: #00e6b8; transform: translateY(-1px); }
   .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
-  
-  /* Quick Match Tags */
-  .quick-matches { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
-  .tag {
-    background: #2a3a4a; border-radius: 4px; padding: 4px 10px;
-    font-size: 12px; color: #8899aa; border: 1px solid #3a4a5a;
-  }
-  .tag.match { border-color: #00d4aa; color: #00d4aa; }
-  
-  /* Result */
-  .result-section { margin-bottom: 12px; }
-  .result-section h3 { 
-    color: #00d4aa; font-size: 14px; margin-bottom: 8px;
-    padding-bottom: 4px; border-bottom: 1px solid #2a3a4a;
-  }
-  .hypothesis {
-    background: #0f1923; border-radius: 8px; padding: 12px;
-    margin-bottom: 8px; border-left: 3px solid #00d4aa;
-  }
-  .hypothesis .rank { color: #ffd700; font-weight: bold; font-size: 13px; }
-  .hypothesis .cause { color: #e0e0e0; margin: 4px 0; }
-  .hypothesis .prob-high { color: #ff4444; }
-  .hypothesis .prob-medium { color: #ffaa00; }
-  .hypothesis .prob-low { color: #66bb6a; }
-  .hypothesis .cmd {
-    background: #1a2a3a; padding: 4px 8px; border-radius: 4px;
-    font-family: monospace; font-size: 12px; color: #88ccff;
-    display: inline-block; margin: 2px; cursor: pointer;
-  }
-  .hypothesis .cmd:hover { background: #2a3a4a; }
-  
-  .classification {
-    display: inline-block; padding: 4px 12px; border-radius: 4px;
-    font-size: 13px; font-weight: 600; margin-bottom: 8px;
-  }
-  .cls-resource { background: #ff444422; color: #ff4444; border: 1px solid #ff4444; }
-  .cls-application { background: #4488ff22; color: #4488ff; border: 1px solid #4488ff; }
-  .cls-dependency { background: #ffaa0022; color: #ffaa00; border: 1px solid #ffaa00; }
-  .cls-external { background: #aa66ff22; color: #aa66ff; border: 1px solid #aa66ff; }
-  .cls-change { background: #66bb6a22; color: #66bb6a; border: 1px solid #66bb6a; }
-  
-  .severity {
-    display: inline-block; padding: 4px 12px; border-radius: 4px;
-    font-size: 13px; font-weight: 600; margin-left: 8px;
-  }
-  .sev-true { background: #ff444422; color: #ff4444; }
-  .sev-false { background: #66bb6a22; color: #66bb6a; }
-  .sev-needs { background: #ffaa0022; color: #ffaa00; }
-  
-  .action-list { margin: 4px 0; padding-left: 20px; }
-  .action-list li { margin-bottom: 4px; font-size: 14px; }
-  
-  .raw-toggle {
-    color: #8899aa; cursor: pointer; font-size: 12px; text-decoration: underline;
-    margin-top: 8px; display: inline-block;
-  }
-  .raw-json { display: none; }
-  .raw-json.visible { display: block; }
-  
+  .btn-rca { background: #ff8800; }
+  .btn-rca:hover { background: #ffaa33; }
+
   .loader {
     display: inline-block; width: 16px; height: 16px;
     border: 2px solid #2a3a4a; border-top: 2px solid #00d4aa;
@@ -112,193 +64,432 @@
     margin-right: 8px; vertical-align: middle;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
-  
+
   .error { color: #ff4444; background: #ff444422; padding: 12px; border-radius: 8px; }
-  
+
+  /* Context Source Indicators */
+  .ctx-grid { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .ctx-badge {
+    padding: 6px 14px; border-radius: 20px; font-size: 12px;
+    display: flex; align-items: center; gap: 6px;
+    background: #0f1923; border: 1px solid #2a3a4a;
+  }
+  .ctx-badge.collecting { border-color: #ffaa00; color: #ffaa00; }
+  .ctx-badge.done { border-color: #66bb6a; color: #66bb6a; }
+  .ctx-badge.fail { border-color: #ff4444; color: #ff4444; }
+  .ctx-badge.sample { border-color: #4488ff; color: #4488ff; }
+
+  /* RCA Report */
+  .rca-section { margin-bottom: 16px; }
+  .rca-section h3 { 
+    color: #00d4aa; font-size: 15px; margin-bottom: 8px;
+    padding-bottom: 4px; border-bottom: 1px solid #2a3a4a;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .rca-timeline { position: relative; padding-left: 24px; }
+  .rca-timeline::before {
+    content: ''; position: absolute; left: 8px; top: 4px; bottom: 4px;
+    width: 2px; background: #2a3a4a;
+  }
+  .rca-event {
+    position: relative; margin-bottom: 12px; padding-left: 12px;
+  }
+  .rca-event::before {
+    content: ''; position: absolute; left: -20px; top: 6px;
+    width: 8px; height: 8px; border-radius: 50%; background: #00d4aa;
+  }
+  .rca-event .time { color: #ffd700; font-weight: bold; font-size: 13px; }
+  .rca-event .source { color: #8899aa; font-size: 11px; }
+  .rca-event .desc { color: #e0e0e0; font-size: 14px; }
+
+  .root-cause-box {
+    background: #ff444422; border: 1px solid #ff444488; border-radius: 8px;
+    padding: 16px; margin-bottom: 8px;
+  }
+  .root-cause-box .label { color: #ff4444; font-weight: bold; font-size: 13px; }
+  .root-cause-box .summary { color: #e0e0e0; font-size: 16px; font-weight: 600; margin: 4px 0; }
+  .root-cause-box .detail { color: #aaa; font-size: 14px; }
+  .evidence-list { margin: 8px 0 0 16px; }
+  .evidence-list li { color: #88ccff; font-size: 13px; margin-bottom: 4px; }
+
+  .fix-card {
+    background: #0f1923; border-radius: 8px; padding: 12px;
+    margin-bottom: 8px; border-left: 3px solid #00d4aa;
+  }
+  .fix-card .priority { color: #ffd700; font-weight: bold; font-size: 13px; }
+  .fix-card .action { color: #e0e0e0; margin: 4px 0; }
+  .fix-card .command {
+    background: #1a2a3a; padding: 6px 10px; border-radius: 4px;
+    font-family: monospace; font-size: 13px; color: #88ccff;
+    display: inline-block; margin: 4px 0; cursor: pointer;
+  }
+  .fix-card .command:hover { background: #2a3a4a; }
+
+  .severity-tag {
+    display: inline-block; padding: 4px 12px; border-radius: 4px;
+    font-size: 13px; font-weight: 600; margin-bottom: 8px;
+  }
+  .sev-P0 { background: #ff444444; color: #ff4444; border: 1px solid #ff4444; }
+  .sev-P1 { background: #ff880044; color: #ff8800; border: 1px solid #ff8800; }
+  .sev-P2 { background: #ffaa0044; color: #ffaa00; border: 1px solid #ffaa00; }
+
+  .prevention-list { padding-left: 20px; }
+  .prevention-list li { margin-bottom: 6px; font-size: 14px; color: #66bb6a; }
+
   .example-badge {
     display: inline-block; background: #2a3a4a; border-radius: 4px;
     padding: 3px 8px; font-size: 11px; color: #8899aa; margin-right: 4px;
     margin-top: 4px; cursor: pointer; border: 1px solid #3a4a5a;
   }
   .example-badge:hover { border-color: #00d4aa; color: #00d4aa; }
+  .example-badge.rca { border-color: #ff880088; }
+  .example-badge.rca:hover { border-color: #ff8800; color: #ff8800; }
+
+  .ctx-progress {
+    display: flex; gap: 6px; align-items: center; padding: 8px 0;
+    font-size: 13px; color: #8899aa;
+  }
+  .ctx-progress .spinner { width: 12px; height: 12px; border: 2px solid #2a3a4a; border-top: 2px solid #ffaa00; border-radius: 50%; animation: spin 0.8s linear infinite; }
 </style>
 </head>
 <body>
 <div class="container">
-  <h1>🔧 AI Ops Troubleshooting Assistant</h1>
-  <p class="subtitle">Describe an incident → Get structured root cause analysis</p>
-  
-  <!-- Preset examples -->
-  <div class="card">
-    <div class="card-title">📋 Quick Examples</div>
-    <div>
-      <span class="example-badge" onclick="loadExample(1)">Pod CrashLoopBackOff</span>
-      <span class="example-badge" onclick="loadExample(2)">CPU 100% + 延迟升高</span>
-      <span class="example-badge" onclick="loadExample(3)">数据库连接池耗尽</span>
-      <span class="example-badge" onclick="loadExample(4)">Redis timeout + 慢查询</span>
-    </div>
+  <h1>🔧 AI Ops RCA</h1>
+  <p class="subtitle">告警 → 上下文收集 → RCA 报告（自动生成）</p>
+
+  <!-- Mode Tabs -->
+  <div class="mode-tabs">
+    <div class="mode-tab active" id="tabRca" onclick="switchMode('rca')">🕵️ RCA 分析</div>
+    <div class="mode-tab" id="tabAnalyze" onclick="switchMode('analyze')">🔍 快速排查</div>
   </div>
-  
-  <!-- API Endpoint + API Key Configuration -->
+
+  <!-- Card: Configuration -->
   <div class="card">
     <div class="card-title">⚙️ Configuration</div>
     <div class="row">
-      <div style="flex: 3;">
+      <div style="flex: 1;">
         <label>Backend API URL</label>
-        <input id="apiEndpoint" placeholder="Default: https://avon-claimed-pattern-forgot.trycloudflare.com">
+        <input id="apiEndpoint" placeholder="e.g. https://your-tunnel.trycloudflare.com">
       </div>
-      <div style="flex: 1; display: flex; align-items: flex-end;">
-        <button class="btn" onclick="saveApiEndpoint()" style="padding: 12px 16px; font-size: 14px; width: 100%;">💾 Save</button>
-      </div>
-    </div>
-    <div style="font-size: 12px; color: #8899aa; margin-top: 6px;">
-      💡 URL parameter: <code>?api=https://your-api.com</code>
     </div>
   </div>
 
-  <!-- Input -->
-  <div class="card">
-    <div class="card-title">📝 Incident Description</div>
-    <textarea id="incident" class="incident-input" placeholder="Describe the incident, e.g.:&#10;order-service P95 latency from 200ms to 3s&#10;CPU at 95%, memory at 80%&#10;connection timeout errors increasing in logs&#10;..."></textarea>
-    
-    <div class="row">
-      <div>
-        <label>Provider</label>
-        <select id="provider">
-          <option value="deepseek">DeepSeek</option>
-          <option value="openai">OpenAI</option>
-        </select>
-      </div>
-      <div>
-        <label>Model</label>
-        <input id="model" value="deepseek-chat" placeholder="model name">
-      </div>
-    </div>
-    
-    <div style="text-align: right; margin-top: 12px;">
-      <button id="analyzeBtn" class="btn" onclick="analyze()">🚀 Analyze</button>
-    </div>
-  </div>
-  
-  <!-- Quick Match Results -->
-  <div id="quickMatchSection" style="display:none;">
+  <!-- RCA Mode Input -->
+  <div id="rcaInput">
     <div class="card">
-      <div class="card-title">🔍 Quick Pattern Match</div>
-      <div id="quickMatches" class="quick-matches"></div>
+      <div class="card-title">🚨 告警输入</div>
+      <textarea id="rcaAlert" class="incident-input" placeholder="输入告警内容，例如：&#10;CPU > 90% on payment-api&#10;服务不可用 / 503 错误激增&#10;Pod CrashLoopBackOff&#10;延迟飙升 P99 3s"></textarea>
+      <div class="row" style="margin-top:8px;">
+        <div><label>服务名称</label><input id="rcaService" placeholder="payment-api（可选）"></div>
+        <div><label>K8s Namespace</label><input id="rcaNamespace" value="default" placeholder="default"></div>
+      </div>
+      <div class="row" style="margin-top:4px;">
+        <div style="flex:0 0 auto;">
+          <span class="example-badge rca" onclick="loadRcaExample(1)">CPU > 90%</span>
+          <span class="example-badge rca" onclick="loadRcaExample(2)">Pod CrashLoopBackOff</span>
+          <span class="example-badge rca" onclick="loadRcaExample(3)">Redis 超时</span>
+          <span class="example-badge rca" onclick="loadRcaExample(4)">500 错误</span>
+        </div>
+      </div>
+      <div style="text-align: right; margin-top: 12px;">
+        <button id="rcaBtn" class="btn btn-rca" onclick="runRca()">🚀 执行 RCA 分析</button>
+      </div>
+    </div>
+
+    <!-- Context Collection Progress -->
+    <div id="ctxProgress" class="card" style="display:none;">
+      <div class="card-title">📡 上下文收集</div>
+      <div id="ctxGrid" class="ctx-grid"></div>
     </div>
   </div>
-  
-  <!-- Analysis Results -->
+
+  <!-- Analyze Mode Input -->
+  <div id="analyzeInput" style="display:none;">
+    <div class="card">
+      <div class="card-title">📝 Incident Description</div>
+      <textarea id="incident" class="incident-input" placeholder="Describe the incident..."></textarea>
+      <div class="row">
+        <div><label>Provider</label><select id="provider"><option value="deepseek">DeepSeek</option></select></div>
+        <div><label>Model</label><input id="model" value="deepseek-chat"></div>
+      </div>
+      <div style="text-align:right;margin-top:12px;">
+        <button id="analyzeBtn" class="btn" onclick="analyze()">🚀 Analyze</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- RCA Report -->
+  <div id="rcaReport" class="card" style="display:none;">
+    <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+      <span>📋 RCA 报告</span>
+      <span id="rcaSourceInfo" style="font-size:11px;color:#667788;"></span>
+    </div>
+    <div id="rcaContent"></div>
+    <div style="margin-top:12px;padding-top:12px;border-top:1px solid #2a3a4a;">
+      <span class="raw-toggle" onclick="toggleRaw()" style="color:#8899aa;cursor:pointer;font-size:12px;">📄 Show raw response</span>
+      <pre id="rawJson" class="raw-json" style="display:none;background:#0f1923;padding:12px;border-radius:8px;margin-top:8px;font-size:12px;overflow:auto;max-height:400px;"></pre>
+    </div>
+  </div>
+
+  <!-- Analyze Results -->
   <div id="resultSection" style="display:none;">
     <div class="card">
       <div id="resultContent"></div>
-      <span class="raw-toggle" onclick="toggleRaw()">📄 Show raw response</span>
-      <pre id="rawJson" class="raw-json"></pre>
+      <span class="raw-toggle" onclick="toggleRaw()" style="color:#8899aa;cursor:pointer;font-size:12px;">📄 Show raw response</span>
+      <pre id="rawJsonAnalyze" style="display:none;background:#0f1923;padding:12px;border-radius:8px;margin-top:8px;font-size:12px;overflow:auto;max-height:400px;"></pre>
     </div>
   </div>
-  
+
   <!-- Error -->
   <div id="errorSection" style="display:none;">
     <div class="card error" id="errorContent"></div>
   </div>
 
-  <!-- Usage Quota -->
-  <div id="quotaSection" class="card" style="display:none; border-color: #2a3a4a;">
-    <div class="card-title">📊 Today's Usage Quota</div>
+  <!-- Quota -->
+  <div id="quotaSection" class="card" style="display:none;border-color:#2a3a4a;">
+    <div class="card-title">📊 Today's Usage</div>
     <div id="quotaContent"></div>
   </div>
 </div>
 
 <script>
-// API endpoint resolution: URL param > localStorage > default (tunnel URL)
-const DEFAULT_API = 'https://avon-claimed-pattern-forgot.trycloudflare.com';
-const urlParams = new URLSearchParams(window.location.search);
-const apiFromUrl = urlParams.get('api');
-const apiFromStorage = localStorage.getItem('aiops_api_endpoint');
-const API = apiFromUrl || apiFromStorage || DEFAULT_API;
-// If from URL param, save to localStorage for persistence
-if (apiFromUrl) {
-  localStorage.setItem('aiops_api_endpoint', apiFromUrl);
-}
+const DEFAULT_API = (() => {
+  const u = new URLSearchParams(window.location.search).get('api');
+  return u || localStorage.getItem('aiops_api_endpoint') || '';
+})();
+if (DEFAULT_API) localStorage.setItem('aiops_api_endpoint', DEFAULT_API);
+const API = DEFAULT_API || '';
 
-// Hardcoded default API Key (shown masked in UI, used automatically)
-const DEFAULT_API_KEY = '5ZK0yWIGMvkp7sxacNGOkhvZC+0vJtnagi0fykgq7F8=';
-
-// API Key resolution: URL param > localStorage > hardcoded default
-const keyFromUrl = urlParams.get('key');
-const keyFromStorage = localStorage.getItem('aiops_api_key');
-const API_KEY = keyFromUrl || keyFromStorage || DEFAULT_API_KEY;
-if (keyFromUrl) {
-  localStorage.setItem('aiops_api_key', keyFromUrl);
-}
-
-// Populate the UI input fields on load
 document.addEventListener('DOMContentLoaded', function() {
-  const endpointInput = document.getElementById('apiEndpoint');
-  if (endpointInput) {
-    endpointInput.value = localStorage.getItem('aiops_api_endpoint') || DEFAULT_API;
-  }
-  // Load quota on page load
+  const ep = document.getElementById('apiEndpoint');
+  if (ep) ep.value = localStorage.getItem('aiops_api_endpoint') || '';
   loadQuota();
 });
+
 function saveApiEndpoint() {
   const val = document.getElementById('apiEndpoint').value.trim();
   localStorage.setItem('aiops_api_endpoint', val);
-  alert('API endpoint saved! ' + (val ? 'Using: ' + val : 'Using same-origin (no prefix)'));
-  // Reload to apply
+  alert('Saved! ' + (val ? 'Using: ' + val : 'Using same-origin'));
   location.reload();
+}
+
+function switchMode(mode) {
+  document.getElementById('tabRca').className = 'mode-tab' + (mode === 'rca' ? ' active' : '');
+  document.getElementById('tabAnalyze').className = 'mode-tab' + (mode === 'analyze' ? ' active' : '');
+  document.getElementById('rcaInput').style.display = mode === 'rca' ? 'block' : 'none';
+  document.getElementById('analyzeInput').style.display = mode === 'analyze' ? 'block' : 'none';
+  document.getElementById('rcaReport').style.display = 'none';
+  document.getElementById('resultSection').style.display = 'none';
+  document.getElementById('errorSection').style.display = 'none';
+}
+
+// ── RCA Examples ──
+const rcaExamples = [
+  { alert: 'CPU > 90% on payment-api\nP99 latency from 200ms to 3s\n503 errors increasing', service: 'payment-api' },
+  { alert: 'order-service Pod CrashLoopBackOff\nRestarted 5 times in 10 minutes\nOOM: Java heap space\nMemory limit: 512Mi', service: 'order-service' },
+  { alert: 'Cache read timeout spikes\nRedis CPU 90%, latency P99 500ms\n"Unexpected end of stream" errors\nLarge JSON blobs (100KB+)', service: 'product-service' },
+  { alert: 'API Gateway 500 errors\n"Connection refused" to downstream\nRecent deployment 30 min ago\nCPU 80%, memory 75%', service: 'api-gateway' },
+];
+
+function loadRcaExample(n) {
+  document.getElementById('rcaAlert').value = rcaExamples[n-1].alert;
+  document.getElementById('rcaService').value = rcaExamples[n-1].service;
+}
+
+// ── RCA Pipeline ──
+async function runRca() {
+  const alert = document.getElementById('rcaAlert').value.trim();
+  if (!alert) { alert('请输入告警内容'); return; }
+
+  const btn = document.getElementById('rcaBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="loader"></span> 收集中...';
+
+  document.getElementById('errorSection').style.display = 'none';
+  document.getElementById('rcaReport').style.display = 'none';
+
+  // Show context progress
+  const ctxDiv = document.getElementById('ctxProgress');
+  ctxDiv.style.display = 'block';
+  const ctxGrid = document.getElementById('ctxGrid');
+  const sources = ['kubernetes', 'elasticsearch', 'prometheus', 'otel'];
+  const sourceLabels = { kubernetes: '☸️ K8s', elasticsearch: '📄 ES', prometheus: '📊 Prometheus', otel: '🔗 OTel' };
+  ctxGrid.innerHTML = sources.map(s => `<span class="ctx-badge collecting" id="ctx-${s}"><span class="spinner" style="width:10px;height:10px;"></span> ${sourceLabels[s]}</span>`).join('');
+
+  const service = document.getElementById('rcaService').value.trim();
+  const namespace = document.getElementById('rcaNamespace').value.trim() || 'default';
+
+  try {
+    const resp = await fetch(API + '/rca', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alert, service, namespace }),
+    });
+    const data = await resp.json();
+
+    // Update context badges
+    if (data.context_summary) {
+      for (const [src, status] of Object.entries(data.context_summary)) {
+        const badge = document.getElementById('ctx-' + src);
+        if (badge) {
+          badge.className = 'ctx-badge ' + (status === 'live' ? 'done' : status === 'sample' ? 'sample' : 'fail');
+          badge.innerHTML = (status === 'live' ? '✅' : status === 'sample' ? '🔵' : '❌') + ' ' + (sourceLabels[src] || src) + ': ' + status;
+        }
+      }
+    }
+
+    // Render report
+    if (data.report && data.report.title) {
+      renderRcaReport(data.report, data.context_summary);
+      document.getElementById('rcaReport').style.display = 'block';
+      document.getElementById('rawJson').textContent = JSON.stringify(data, null, 2);
+    } else {
+      renderError('RCA 报告解析失败: ' + JSON.stringify(data.report));
+    }
+  } catch (err) {
+    renderError('Network error: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '🚀 执行 RCA 分析';
+  }
+}
+
+function renderRcaReport(r, ctxSummary) {
+  const div = document.getElementById('rcaContent');
+  const sevClass = 'sev-' + (r.severity || 'P2');
+
+  // Source info
+  const srcInfo = document.getElementById('rcaSourceInfo');
+  if (ctxSummary) {
+    const parts = Object.entries(ctxSummary).map(([k,v]) => k + ':' + v);
+    srcInfo.textContent = '数据源: ' + parts.join(' | ');
+  }
+
+  let html = '';
+
+  // Header
+  html += `<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">`;
+  html += `<span class="severity-tag ${sevClass}">${r.severity || 'P2'}</span>`;
+  html += `<span style="color:#8899aa;font-size:12px;">${r.status || 'investigating'}</span>`;
+  html += `</div>`;
+
+  // Title
+  html += `<h2 style="font-size:18px;color:#e0e0e0;margin-bottom:12px;">${r.title || '故障分析报告'}</h2>`;
+
+  // Summary
+  if (r.summary) {
+    html += `<div style="background:#0f1923;border-radius:8px;padding:12px;margin-bottom:16px;border-left:3px solid #00d4aa;">`;
+    html += `<div style="color:#8899aa;font-size:12px;margin-bottom:4px;">📌 摘要</div>`;
+    html += `<div style="color:#e0e0e0;font-size:14px;">${r.summary}</div>`;
+    html += `</div>`;
+  }
+
+  // Timeline
+  if (r.timeline && r.timeline.length > 0) {
+    html += `<div class="rca-section"><h3>⏱️ 时间线</h3><div class="rca-timeline">`;
+    r.timeline.forEach(t => {
+      html += `<div class="rca-event">`;
+      html += `<span class="time">${t.time}</span> <span class="source">[${t.source}]</span>`;
+      html += `<div class="desc">${t.event}</div>`;
+      html += `</div>`;
+    });
+    html += `</div></div>`;
+  }
+
+  // Root Cause
+  if (r.root_cause) {
+    html += `<div class="rca-section"><h3>🔎 根因分析</h3><div class="root-cause-box">`;
+    html += `<div class="label">🎯 根因 · 置信度: ${r.root_cause.confidence || 'medium'}</div>`;
+    html += `<div class="summary">${r.root_cause.summary || ''}</div>`;
+    if (r.root_cause.detail) html += `<div class="detail">${r.root_cause.detail}</div>`;
+    if (r.root_cause.evidence && r.root_cause.evidence.length > 0) {
+      html += `<ul class="evidence-list">`;
+      r.root_cause.evidence.forEach(e => html += `<li>🔹 ${e}</li>`);
+      html += `</ul>`;
+    }
+    html += `</div></div>`;
+  }
+
+  // Impact
+  if (r.impact) {
+    html += `<div class="rca-section"><h3>💥 影响范围</h3><div style="display:flex;gap:16px;flex-wrap:wrap;">`;
+    const impact = r.impact;
+    if (impact.services) html += `<div style="background:#0f1923;padding:10px;border-radius:8px;flex:1;min-width:120px;"><div style="color:#8899aa;font-size:11px;">受影响服务</div><div style="color:#ff8800;font-size:14px;font-weight:600;">${impact.services.join(', ')}</div></div>`;
+    if (impact.duration_minutes) html += `<div style="background:#0f1923;padding:10px;border-radius:8px;flex:1;min-width:100px;"><div style="color:#8899aa;font-size:11px;">持续时间</div><div style="color:#ff4444;font-size:14px;font-weight:600;">${impact.duration_minutes} min</div></div>`;
+    if (impact.error_rate_increase) html += `<div style="background:#0f1923;padding:10px;border-radius:8px;flex:1;min-width:120px;"><div style="color:#8899aa;font-size:11px;">错误率变化</div><div style="color:#ff4444;font-size:14px;font-weight:600;">${impact.error_rate_increase}</div></div>`;
+    if (impact.latency_increase) html += `<div style="background:#0f1923;padding:10px;border-radius:8px;flex:1;min-width:120px;"><div style="color:#8899aa;font-size:11px;">延迟变化</div><div style="color:#ff4444;font-size:14px;font-weight:600;">${impact.latency_increase}</div></div>`;
+    html += `</div></div>`;
+  }
+
+  // Fix Actions
+  if (r.fix_actions && r.fix_actions.length > 0) {
+    html += `<div class="rca-section"><h3>⚡ 修复动作</h3>`;
+    r.fix_actions.sort((a,b) => (a.priority || 999) - (b.priority || 999));
+    r.fix_actions.forEach(f => {
+      html += `<div class="fix-card">`;
+      html += `<span class="priority">#${f.priority || '-'}</span>`;
+      html += `<div class="action">${f.action}</div>`;
+      if (f.command) html += `<span class="command" onclick="copyText(this)">${f.command}</span>`;
+      html += `</div>`;
+    });
+    html += `</div>`;
+  }
+
+  // Contributing Factors
+  if (r.contributing_factors && r.contributing_factors.length > 0) {
+    html += `<div class="rca-section"><h3>🧩 关联因素</h3><ul style="padding-left:20px;">`;
+    r.contributing_factors.forEach(f => {
+      const typeColors = {config:'#4488ff', code:'#ff8800', infra:'#ff4444', process:'#aa66ff', external:'#8899aa'};
+      const color = typeColors[f.type] || '#8899aa';
+      html += `<li style="margin-bottom:6px;font-size:14px;"><span style="color:${color};font-size:11px;font-weight:600;">[${f.type}]</span> ${f.factor}</li>`;
+    });
+    html += `</ul></div>`;
+  }
+
+  // Prevention
+  if (r.prevention && r.prevention.length > 0) {
+    html += `<div class="rca-section"><h3>🛡️ 改进措施</h3><ul class="prevention-list">`;
+    r.prevention.forEach(p => html += `<li>✅ ${p}</li>`);
+    html += `</ul></div>`;
+  }
+
+  div.innerHTML = html;
+}
+
+function copyText(el) {
+  navigator.clipboard.writeText(el.textContent).then(() => {
+    el.style.background = '#00d4aa33';
+    setTimeout(() => el.style.background = '', 500);
+  });
+}
+
+function toggleRaw() {
+  const el = document.getElementById('rawJson');
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+function renderError(msg) {
+  document.getElementById('errorSection').style.display = 'block';
+  document.getElementById('errorContent').textContent = '❌ ' + msg;
 }
 
 // ── Usage Quota ──
 function renderQuota(q) {
   const div = document.getElementById('quotaContent');
   if (!q) { document.getElementById('quotaSection').style.display = 'none'; return; }
-
-  const rateLimit = q.rate_limit || '?';
   const myLimit = q.quota?.my_llm_limit || 0;
   const myUsed = q.quota?.my_llm_today || 0;
-  const globalLimit = q.quota?.global_llm_limit || 0;
-  const globalUsed = q.quota?.global_llm_today || 0;
   const myRemaining = myLimit - myUsed;
-  const globalRemaining = globalLimit - globalUsed;
-
-  // Progress bar percentage
   const myPct = myLimit > 0 ? Math.min(100, Math.round(myUsed / myLimit * 100)) : 0;
-  const globalPct = globalLimit > 0 ? Math.min(100, Math.round(globalUsed / globalLimit * 100)) : 0;
   const barColor = myPct > 80 ? '#ff4444' : myPct > 50 ? '#ffaa00' : '#00d4aa';
 
   div.innerHTML = `
-    <div style="display:flex; gap:24px; flex-wrap:wrap;">
-      <div style="flex:1; min-width:160px;">
-        <div style="font-size:12px; color:#8899aa; margin-bottom:4px;">
-          ⚡ Rate Limit: <strong style="color:#e0e0e0;">${rateLimit} requests/min/IP</strong>
-        </div>
-      </div>
-      <div style="flex:2; min-width:200px;">
-        <div style="font-size:12px; color:#8899aa; margin-bottom:4px;">
-          🎯 My LLM Calls Today: <strong style="color:#e0e0e0;">${myUsed}</strong> / ${myLimit}
-          <span style="color:${myRemaining > 0 ? '#66bb6a' : '#ff4444'}; margin-left:8px;">
-            (${myRemaining} remaining)
-          </span>
-        </div>
-        <div style="background:#0f1923; border-radius:4px; height:8px; overflow:hidden;">
-          <div style="background:${barColor}; width:${myPct}%; height:100%; border-radius:4px; transition:width 0.3s;"></div>
-        </div>
-      </div>
-      <div style="flex:2; min-width:200px;">
-        <div style="font-size:12px; color:#8899aa; margin-bottom:4px;">
-          🌐 Global LLM Calls Today: <strong style="color:#e0e0e0;">${globalUsed}</strong> / ${globalLimit}
-          <span style="color:${globalRemaining > 0 ? '#66bb6a' : '#ff4444'}; margin-left:8px;">
-            (${globalRemaining} remaining)
-          </span>
-        </div>
-        <div style="background:#0f1923; border-radius:4px; height:8px; overflow:hidden;">
-          <div style="background:#4488ff; width:${globalPct}%; height:100%; border-radius:4px; transition:width 0.3s;"></div>
-        </div>
-      </div>
+    <div style="font-size:12px;color:#8899aa;">
+      🎯 LLM Calls: <strong>${myUsed}</strong> / ${myLimit}
+      <span style="color:${myRemaining > 0 ? '#66bb6a' : '#ff4444'};">(${myRemaining} remaining)</span>
     </div>
-    <div style="font-size:11px; color:#667788; margin-top:8px; border-top:1px solid #2a3a4a; padding-top:6px;">
-      💡 DIRECT route (confidence ≥ 0.70) is free — no LLM quota consumed.
+    <div style="background:#0f1923;border-radius:4px;height:8px;overflow:hidden;margin-top:4px;">
+      <div style="background:${barColor};width:${myPct}%;height:100%;border-radius:4px;transition:width 0.3s;"></div>
     </div>
   `;
   document.getElementById('quotaSection').style.display = 'block';
@@ -307,192 +498,46 @@ function renderQuota(q) {
 async function loadQuota() {
   try {
     const resp = await fetch(API + '/health');
-    if (resp.ok) {
-      const data = await resp.json();
-      renderQuota(data);
-    }
-  } catch (e) {
-    // Silently ignore — quota display is non-critical
-  }
+    if (resp.ok) renderQuota(await resp.json());
+  } catch (_) {}
 }
 
+// ── Legacy analyze mode (keep for backward compat) ──
 const examples = [
-  {
-    text: `Incident: order-service Pod CrashLoopBackOff\nService: order-service\nSeverity: P1\n\nPod status: CrashLoopBackOff, restarted 5 times in 10 minutes\nLogs: "java.lang.OutOfMemoryError: Java heap space" at startup\nResources: memory limit 512Mi, CPU limit 500m`
-  },
-  {
-    text: `Incident: API Gateway P95 latency from 200ms to 3s\nService: api-gateway\nSeverity: P0\n\nMetrics: CPU 98%, memory 75%\nLogs: "connection timeout" for downstream services\nRecent changes: new deployment 30 minutes ago\nTrace: 80% of time spent waiting for order-service response`
-  },
-  {
-    text: `Incident: Order creation failing with database timeout\nService: order-service\nSeverity: P2\n\nError: "HikariPool-1 - Connection is not available, request timed out after 30000ms"\nMetrics: active connections 50/50 (pool full), CPU 30%\nLogs: "could not execute statement; SQL: INSERT INTO orders..."`
-  },
-  {
-    text: `Incident: Cache read timeout spikes\nService: product-service\nSeverity: P2\n\nError: "redis.clients.jedis.exceptions.JedisConnectionException: Unexpected end of stream"\nMetrics: Redis CPU 90%, latency P99 500ms\nSigns: some cache keys are large JSON blobs (100KB+)`
-  }
+  { text: `Incident: order-service Pod CrashLoopBackOff\nService: order-service\nSeverity: P1\nPod status: CrashLoopBackOff, restarted 5 times\nLogs: "java.lang.OutOfMemoryError: Java heap space"\nResources: memory limit 512Mi` },
+  { text: `Incident: API Gateway P95 latency from 200ms to 3s\nService: api-gateway\nSeverity: P0\nCPU 98%, memory 75%\nLogs: "connection timeout"` },
+  { text: `Incident: Order creation failing with database timeout\nService: order-service\nSeverity: P2\n"Connection is not available, request timed out"\nactive connections 50/50` },
+  { text: `Incident: Cache read timeout spikes\nService: product-service\nSeverity: P2\n"Unexpected end of stream"\nRedis CPU 90%, latency P99 500ms` },
 ];
 
-function loadExample(n) {
-  document.getElementById('incident').value = examples[n-1].text;
-}
+function loadExample(n) { document.getElementById('incident').value = examples[n-1].text; }
 
 async function analyze() {
   const incident = document.getElementById('incident').value.trim();
   if (!incident) { alert('Please describe the incident first.'); return; }
-  
   const btn = document.getElementById('analyzeBtn');
-  btn.disabled = true;
-  btn.innerHTML = '<span class="loader"></span> Analyzing...';
-  
+  btn.disabled = true; btn.innerHTML = '<span class="loader"></span> Analyzing...';
   document.getElementById('errorSection').style.display = 'none';
   document.getElementById('resultSection').style.display = 'none';
-  document.getElementById('quickMatchSection').style.display = 'none';
-  
   try {
-    const headers = { 'Content-Type': 'application/json' };
-    if (API_KEY) {
-      headers['X-API-Key'] = API_KEY;
-    }
     const resp = await fetch(API + '/analyze', {
       method: 'POST',
-      headers: headers,
-      body: JSON.stringify({
-        incident: incident,
-        model: document.getElementById('model').value.trim(),
-        provider: document.getElementById('provider').value
-      })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ incident, model: 'deepseek-chat', provider: 'deepseek' }),
     });
-    
     const data = await resp.json();
-    
-    // Quick matches
-    if (data.quick_matches && data.quick_matches.length > 0) {
-      document.getElementById('quickMatchSection').style.display = 'block';
-      document.getElementById('quickMatches').innerHTML = 
-        data.quick_matches.map(m => 
-          `<span class="tag match">🔍 ${m.title}</span>`
-        ).join('');
-    }
-    
-    // Analysis
-    const analysis = data.analysis;
-    if (analysis && !analysis.parse_error) {
-      renderAnalysis(analysis);
+    if (data.analysis && !data.analysis.parse_error) {
+      document.getElementById('resultContent').innerHTML = `<pre style="color:#88ccff;">${JSON.stringify(data.analysis, null, 2)}</pre>`;
+      document.getElementById('rawJsonAnalyze').textContent = JSON.stringify(data, null, 2);
+      document.getElementById('resultSection').style.display = 'block';
     } else {
       renderError(data.raw || 'No analysis returned');
     }
-    
-    // Raw JSON
-    document.getElementById('rawJson').textContent = JSON.stringify(data, null, 2);
-
-    // Refresh quota after each analysis
-    loadQuota();
-    
   } catch (err) {
     renderError('Network error: ' + err.message);
   } finally {
-    btn.disabled = false;
-    btn.innerHTML = '🚀 Analyze';
+    btn.disabled = false; btn.innerHTML = '🚀 Analyze';
   }
-}
-
-function renderAnalysis(a) {
-  const div = document.getElementById('resultContent');
-  let html = '';
-  
-  // Classification
-  if (a.classification) {
-    const cls = a.classification.toLowerCase();
-    const clsClass = {
-      'resource': 'cls-resource', '应用': 'cls-application',
-      'dependency': 'cls-dependency', '外部': 'cls-external',
-      'change': 'cls-change', '变更': 'cls-change'
-    }[cls] || 'cls-resource';
-    
-    html += `<span class="classification ${clsClass}">📌 ${a.classification}</span>`;
-  }
-  
-  // Severity
-  if (a.severity_assessment) {
-    const sev = a.severity_assessment;
-    const sevClass = sev.includes('true') ? 'sev-true' : 
-                     sev.includes('false') ? 'sev-false' : 'sev-needs';
-    html += `<span class="severity ${sevClass}">⚠️ ${sev}</span>`;
-  }
-  
-  // Root cause hypotheses
-  if (a.root_cause_hypotheses && a.root_cause_hypotheses.length > 0) {
-    html += `<div class="result-section"><h3>🔎 Root Cause Hypotheses</h3>`;
-    a.root_cause_hypotheses.forEach(h => {
-      const probClass = h.probability === 'high' ? 'prob-high' : 
-                        h.probability === 'medium' ? 'prob-medium' : 'prob-low';
-      html += `<div class="hypothesis">
-        <div><span class="rank">#${h.rank}</span> 
-          <span class="${probClass}">[${h.probability}]</span>
-        </div>
-        <div class="cause">${h.cause || h.cause_description || ''}</div>
-        <div style="font-size:12px;color:#8899aa;margin:4px 0;">${h.evidence || ''}</div>`;
-      
-      if (h.verify_steps && h.verify_steps.length > 0) {
-        html += `<div style="margin-top:6px;">
-          <span style="font-size:11px;color:#8899aa;">Verify:</span>`;
-        h.verify_steps.forEach(cmd => {
-          html += `<span class="cmd" onclick="copyCmd(this)">${cmd}</span>`;
-        });
-        html += `</div>`;
-      }
-      html += `</div>`;
-    });
-    html += `</div>`;
-  }
-  
-  // Immediate actions
-  if (a.immediate_actions && a.immediate_actions.length > 0) {
-    html += `<div class="result-section"><h3>⚡ Immediate Actions</h3><ul class="action-list">`;
-    a.immediate_actions.forEach(a => html += `<li>${a}</li>`);
-    html += `</ul></div>`;
-  }
-  
-  // Mitigation
-  if (a.mitigation_suggestions && a.mitigation_suggestions.length > 0) {
-    html += `<div class="result-section"><h3>🛡️ Mitigation</h3><ul class="action-list">`;
-    a.mitigation_suggestions.forEach(m => html += `<li>${m}</li>`);
-    html += `</ul></div>`;
-  }
-  
-  // Commands
-  if (a.commands) {
-    for (const [type, cmds] of Object.entries(a.commands)) {
-      if (cmds && cmds.length > 0) {
-        html += `<div class="result-section"><h3>💻 ${type === 'check' ? 'Check' : type === 'fix' ? 'Fix' : type} Commands</h3>`;
-        cmds.forEach(c => html += `<div style="margin:4px 0;"><code style="background:#0f1923;padding:4px 8px;border-radius:4px;font-size:13px;color:#88ccff;">${c}</code></div>`);
-        html += `</div>`;
-      }
-    }
-  }
-  
-  if (!html) {
-    html = `<pre style="color:#8899aa;">${JSON.stringify(a, null, 2)}</pre>`;
-  }
-  
-  div.innerHTML = html;
-  document.getElementById('resultSection').style.display = 'block';
-}
-
-function renderError(msg) {
-  document.getElementById('errorContent').textContent = '❌ ' + msg;
-  document.getElementById('errorSection').style.display = 'block';
-}
-
-function toggleRaw() {
-  document.getElementById('rawJson').classList.toggle('visible');
-}
-
-function copyCmd(el) {
-  const text = el.textContent;
-  navigator.clipboard.writeText(text).then(() => {
-    el.style.background = '#00d4aa33';
-    setTimeout(() => el.style.background = '', 500);
-  });
 }
 </script>
 </body>
