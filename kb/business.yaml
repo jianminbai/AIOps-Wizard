@@ -1,0 +1,92 @@
+# Business-related incident KB entries
+# Category: business (新分类)
+
+- id: KB601
+  title: 订单量异常下降
+  title_en: Order Volume Abnormal Drop
+  keywords: [order drop, 订单下降, 订单跌零, gmv drop, transaction decline, 支付失败, order zero]
+  category: business
+  severity: P0
+  common_causes:
+    - 支付网关故障或超时
+    - 前端下单按钮 JS 报错
+    - CDN 缓存了错误页面
+    - 风控系统误拦截正常用户
+    - 第三方支付渠道（微信/支付宝）故障
+  check_commands:
+    - "curl -s 'http://prometheus:9090/api/v1/query?query=rate(order_created_total[5m])' | jq '.data.result[].value[1]'"
+    - "curl -s 'http://prometheus:9090/api/v1/query?query=rate(payment_success_total[5m])' | jq '.data.result[].value[1]'"
+    - "kubectl logs -l app=order-service --tail=100 | grep -iE 'error|fail|timeout'"
+    - "curl -s 'https://api.weixin.qq.com/pay/...' -o /dev/null -w '%{http_code}'"
+  fix_commands:
+    - kubectl rollout restart deployment/order-service
+    - kubectl scale deployment/payment-gateway --replicas=5
+    - "curl -XPOST 'http://admin/switch-payment-channel?channel=alipay'"
+  tags:
+    - business
+    - order
+    - payment
+    - revenue
+  source: internal
+  confidence_weight: 1.0
+  root_cause: "支付链路或下单流程故障导致订单丢失"
+
+- id: KB602
+  title: 支付成功率下降
+  title_en: Payment Success Rate Decline
+  keywords: [payment rate, 支付成功率, 支付失败, payment failed, 扣款失败, 重复扣款]
+  category: business
+  severity: P0
+  common_causes:
+    - 银行/第三方支付接口超时
+    - 支付回调通知丢失
+    - 订单状态机卡死（已扣款但未更新状态）
+    - 分布式事务不一致
+    - 支付限额触发
+  check_commands:
+    - "SELECT status, COUNT(*) FROM payments WHERE created_at > NOW() - INTERVAL 1 HOUR GROUP BY status;"
+    - "grep -iE 'payment.*fail|payment.*timeout' /var/log/order-service/*.log | tail -50"
+    - "kubectl logs -l app=payment-service --tail=100 | grep -iE 'callback|notify'"
+    - "curl -s 'http://prometheus:9090/api/v1/query?query=rate(payment_failed_total[5m])'"
+  fix_commands:
+    - "UPDATE payments SET status='pending_retry' WHERE status='failed' AND created_at > NOW() - INTERVAL 1 HOUR;"
+    - kubectl rollout restart deployment/payment-service
+    - kubectl scale deployment/payment-gateway --replicas=3
+  tags:
+    - business
+    - payment
+    - transaction
+    - finance
+  source: internal
+  confidence_weight: 1.0
+  root_cause: "支付链路异常导致交易失败率上升"
+
+- id: KB603
+  title: 用户登录/注册异常
+  title_en: Login / Registration Failure
+  keywords: [login fail, 登录失败, sso, oauth, 验证码, captcha, sms fail, 注册失败, auth]
+  category: business
+  severity: P1
+  common_causes:
+    - SSO/OAuth 服务不可用
+    - 短信/邮件验证码发送通道故障
+    - Session/Token 存储（Redis）不可用
+    - 第三方登录（微信/企业微信）回调异常
+    - 验证码被暴力破解或频率限制误伤
+  check_commands:
+    - "curl -s 'http://prometheus:9090/api/v1/query?query=rate(login_failed_total[5m])'"
+    - "redis-cli -h redis-session INFO clients | grep connected_clients"
+    - "curl -s 'https://oauth.example.com/.well-known/openid-configuration' -o /dev/null -w '%{http_code}'"
+    - "grep -iE 'sms.*fail|sms.*error' /var/log/notification-service/*.log | tail -20"
+  fix_commands:
+    - kubectl rollout restart deployment/auth-service
+    - "redis-cli -h redis-session CONFIG SET maxclients 5000"
+    - "curl -XPOST 'http://sms-api/reset-channel?channel=aliyun'"
+  tags:
+    - auth
+    - login
+    - user
+    - business
+  source: internal
+  confidence_weight: 0.9
+  root_cause: "认证链路（SSO/SMS/Redis）故障导致用户无法登录"
