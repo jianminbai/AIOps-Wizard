@@ -217,7 +217,12 @@ async def security_middleware(request: Request, call_next):
     except HTTPException as e:
         return JSONResponse(
             status_code=e.status_code,
-            content={"success": False, "error": e.detail}
+            content={"success": False, "error": e.detail},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type, X-API-Key, Authorization",
+            }
         )
     response = await call_next(request)
     # Add security headers

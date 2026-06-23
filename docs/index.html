@@ -322,9 +322,12 @@ async function runRca() {
   const namespace = document.getElementById('rcaNamespace').value.trim() || 'default';
 
   try {
+    const headers = { 'Content-Type': 'application/json' };
+    const savedKey = localStorage.getItem('aiops_api_key') || '5ZK0yWIGMvkp7sxacNGOkhvZC+0vJtnagi0fykgq7F8=';
+    if (savedKey) headers['X-API-Key'] = savedKey;
     const resp = await fetch(API + '/rca', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: headers,
       body: JSON.stringify({ alert, service, namespace }),
     });
     const data = await resp.json();
@@ -522,9 +525,12 @@ async function analyze() {
   document.getElementById('errorSection').style.display = 'none';
   document.getElementById('resultSection').style.display = 'none';
   try {
+    const hdrs = { 'Content-Type': 'application/json' };
+    const k = localStorage.getItem('aiops_api_key') || '5ZK0yWIGMvkp7sxacNGOkhvZC+0vJtnagi0fykgq7F8=';
+    if (k) hdrs['X-API-Key'] = k;
     const resp = await fetch(API + '/analyze', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: hdrs,
       body: JSON.stringify({ incident, model: 'deepseek-chat', provider: 'deepseek' }),
     });
     const data = await resp.json();
